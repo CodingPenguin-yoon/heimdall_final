@@ -1,0 +1,9 @@
+schema_version = 1
+harness_version = "1.0.0"
+
+managed_paths = [
+  "AGENTS.md",
+  ".agent-harness",
+  ".agents/skills/plan-change",
+  ".agents/skills/verify-change",
+]

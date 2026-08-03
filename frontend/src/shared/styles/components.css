@@ -1,0 +1,269 @@
+.button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.62rem 0.88rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 750;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+
+.button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.button.primary {
+  color: #fff;
+  background: var(--blue);
+  box-shadow: 0 4px 12px rgb(36 107 253 / 20%);
+}
+
+.button.primary:hover:not(:disabled) {
+  background: var(--blue-dark);
+}
+
+.button.secondary {
+  color: #344054;
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.button.secondary:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+.button.dashed {
+  width: 100%;
+  color: #475467;
+  border-color: #cbd5e1;
+  border-style: dashed;
+  background: #fbfcfe;
+}
+
+.button.wide {
+  width: 100%;
+}
+
+.panel,
+.form-card {
+  min-width: 0;
+  padding: 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.panel-heading,
+.form-section-heading,
+.fieldset-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.panel-heading {
+  min-height: 44px;
+  margin-bottom: 1rem;
+}
+
+.result-count,
+.config-version {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.status-badge,
+.branch-chip,
+.health-pill {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.32rem 0.52rem;
+  border-radius: 999px;
+  font-size: 0.69rem;
+  font-weight: 750;
+}
+
+.status-badge > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.status-ready {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.status-ready > span {
+  background: #20a457;
+}
+
+.status-draft {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.status-draft > span {
+  background: #e98a15;
+}
+
+.branch-chip {
+  color: #475467;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.health-pill {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.field-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-grid.compact {
+  gap: 0.8rem;
+}
+
+.full-field {
+  grid-column: 1 / -1;
+}
+
+.input-with-icon {
+  position: relative;
+}
+
+.input-with-icon svg {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 0.75rem;
+  color: #7b8798;
+  transform: translateY(-50%);
+}
+
+.input-with-icon input {
+  padding-left: 2.45rem;
+}
+
+.form-card {
+  display: grid;
+  gap: 1.25rem;
+  padding: 1.35rem;
+}
+
+.form-section-heading {
+  align-items: start;
+  justify-content: start;
+}
+
+.form-section-heading h2 {
+  margin-bottom: 0.28rem;
+}
+
+.form-section-heading p {
+  margin-bottom: 0;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
+.step-index {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  color: var(--blue);
+  border: 1px solid #cfe0ff;
+  border-radius: 9px;
+  background: var(--blue-soft);
+  font-size: 0.7rem;
+  font-weight: 850;
+  place-items: center;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.inline-error {
+  padding: 0.72rem 0.8rem;
+  color: var(--red);
+  border: 1px solid #fecdd3;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  font-size: 0.78rem;
+}
+
+.empty-panel {
+  display: grid;
+  min-height: 230px;
+  align-content: center;
+  justify-items: center;
+  padding: 2rem;
+  color: var(--text-soft);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: #fbfcfd;
+  text-align: center;
+}
+
+.empty-panel p {
+  margin-bottom: 1rem;
+  font-size: 0.82rem;
+}
+
+.empty-panel.compact-empty {
+  min-height: 120px;
+}
+
+.error-panel {
+  color: var(--red);
+  border-color: #fecdd3;
+  background: var(--red-soft);
+}
+
+.empty-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 0.9rem;
+  color: var(--blue);
+  border-radius: 12px;
+  background: var(--blue-soft);
+  place-items: center;
+}
+
+@media (max-width: 680px) {
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .full-field {
+    grid-column: auto;
+  }
+}

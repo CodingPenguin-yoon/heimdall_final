@@ -1,0 +1,41 @@
+name: heimdall-python-dev
+
+services:
+  control-postgres:
+    image: postgres:18.4
+    environment:
+      POSTGRES_DB: heimdall_control
+      POSTGRES_USER: heimdall
+      POSTGRES_PASSWORD: ${HEIMDALL_CONTROL_DB_PASSWORD:?required}
+    ports:
+      - "127.0.0.1:${HEIMDALL_CONTROL_DB_PORT:-55432}:5432"
+    volumes:
+      - control-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U heimdall -d heimdall_control"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  managed-postgres:
+    image: postgres:18.4
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: heimdall_cluster_admin
+      POSTGRES_PASSWORD: ${HEIMDALL_MANAGED_DB_ADMIN_PASSWORD:?required}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+      HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD: ${HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD:?required}
+    ports:
+      - "127.0.0.1:${HEIMDALL_MANAGED_DB_PORT:-55433}:5432"
+    volumes:
+      - managed-postgres:/var/lib/postgresql
+      - ./init-managed-postgres.sh:/docker-entrypoint-initdb.d/001-heimdall-bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U heimdall_cluster_admin -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  control-postgres:
+  managed-postgres:

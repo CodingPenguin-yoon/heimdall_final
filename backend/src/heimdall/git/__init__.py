@@ -1,0 +1,1 @@
+"""Public Git source integration."""

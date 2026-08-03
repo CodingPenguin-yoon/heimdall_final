@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Change"
+  short_description: "변경 결과와 검증·문서 정합성을 완료 전 확인"
+  default_prompt: "Use $verify-change to verify this Heimdall change before declaring it complete."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Change"
+  short_description: "고위험 변경을 조사하고 승인 가능한 구현 계획 작성"
+  default_prompt: "Use $plan-change to investigate and plan this high-risk Heimdall change before implementation."
