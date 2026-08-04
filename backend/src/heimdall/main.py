@@ -16,6 +16,8 @@ from heimdall.project_database.repository import PostgresProjectDatabaseReposito
 from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.repository import PostgresRuntimeRepository
+from heimdall.runtime.status import RuntimeStatusService
 from heimdall.secrets.store import FileSecretStore
 
 
@@ -50,9 +52,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         deployments = DeploymentService(
             PostgresDeploymentRepository(database), projects, project_databases
         )
+        runtime_status = RuntimeStatusService(PostgresRuntimeRepository(database), projects)
         app.state.projects = projects
         app.state.project_databases = project_databases
         app.state.deployments = deployments
+        app.state.runtime_status = runtime_status
         yield
         database.close()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -31,6 +32,9 @@ class MemorySecretStore:
         value, stored_fingerprint = self.items[reference]
         assert stored_fingerprint == fingerprint
         return value
+
+    def resolve(self, reference: str, fingerprint: str) -> Path:
+        raise NotImplementedError
 
 
 class FakeGit:

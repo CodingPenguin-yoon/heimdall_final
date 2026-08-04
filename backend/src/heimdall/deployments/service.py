@@ -8,6 +8,7 @@ from heimdall.common.errors import AppError
 from heimdall.deployments.models import (
     ActiveDeploymentError,
     Deployment,
+    DeploymentEvent,
     DeploymentNotFoundError,
     DeploymentSource,
 )
@@ -85,3 +86,7 @@ class DeploymentService:
             return self._repository.get(deployment_id)
         except DeploymentNotFoundError as error:
             raise AppError(404, "DEPLOYMENT_NOT_FOUND", "Deployment was not found") from error
+
+    def events(self, deployment_id: UUID) -> Sequence[DeploymentEvent]:
+        self.get(deployment_id)
+        return self._repository.list_events(deployment_id)

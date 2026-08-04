@@ -31,6 +31,12 @@
 - multi-service는 generation network의 고유 DNS alias로 통신한다.
 - 프로젝트별 NGINX 하나가 안정 preview port를 소유한다.
 - 모든 candidate가 정상일 때만 gateway를 전환하고 실패 시 기존 preview를 유지한다.
+- Worker는 PostgreSQL claim token과 lease로 fencing하며 만료된 작업은 새 Worker가 회수한다.
+- Docker resource는 project·deployment label과 deterministic generation name을 사용한다.
+- cleanup은 label과 deployment ID가 일치하는 candidate와 이전 generation만 대상으로 한다.
+- project runtime은 active deployment와 host loopback stable preview port를 Control DB에 저장한다.
+- API와 UI는 application stdout 원문 대신 raw secret이 없는 구조화 deployment event를 제공한다.
 - service별 사용자 환경변수와 project database 접근 여부를 설정한다.
 - 사용자 환경변수와 Heimdall 예약 `DATABASE_*`, `HEIMDALL_*` 값을 배포 시 합성한다.
 - project database password와 사용자 secret은 Heimdall이 관리하며 API·Control DB·deployment snapshot에 raw 값을 남기지 않는다.
+- user secret kind 환경변수에는 raw 값이 아니라 `/run/secrets/heimdall/environment/<name>` file path를 전달한다.

@@ -18,6 +18,7 @@ services:
       retries: 10
 
   managed-postgres:
+    container_name: heimdall-managed-postgres
     image: postgres:18.4
     environment:
       POSTGRES_DB: postgres

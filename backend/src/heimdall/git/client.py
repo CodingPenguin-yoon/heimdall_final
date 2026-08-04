@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -69,6 +70,39 @@ class GitClient:
                 "refs/remotes/origin/main",
             )
         return _parse_log(result.stdout)
+
+    def checkout_exact(self, repository_url: str, commit_sha: str, target: Path) -> None:
+        validate_public_github_url(repository_url)
+        if re.fullmatch(r"[0-9a-f]{40}", commit_sha) is None:
+            raise GitAccessError("Commit SHA must be 40 lowercase hexadecimal characters")
+        if target.exists():
+            if target.is_symlink() or not target.is_dir() or any(target.iterdir()):
+                raise GitAccessError("Source workspace must be an empty private directory")
+        else:
+            target.mkdir(mode=0o700, parents=True)
+        os.chmod(target, 0o700)
+
+        self._run("init", "--quiet", str(target))
+        self._run("-C", str(target), "remote", "add", "origin", repository_url)
+        self._run(
+            "-C",
+            str(target),
+            "fetch",
+            "--quiet",
+            f"--depth={self._recent_commit_limit}",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+        self._run("-C", str(target), "cat-file", "-e", f"{commit_sha}^{{commit}}")
+        self._run(
+            "-C",
+            str(target),
+            "merge-base",
+            "--is-ancestor",
+            commit_sha,
+            "refs/remotes/origin/main",
+        )
+        self._run("-C", str(target), "checkout", "--quiet", "--detach", commit_sha)
 
     def _run(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         environment = {

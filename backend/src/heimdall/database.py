@@ -35,6 +35,9 @@ class Database:
         migrations_root = Path(__file__).with_name("migrations")
         with self.connection() as connection:
             connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('heimdall-schema-migrations'))"
+            )
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     version text PRIMARY KEY,

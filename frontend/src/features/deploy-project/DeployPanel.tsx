@@ -5,6 +5,7 @@ import { createDeployment } from '@/entities/deployment/api';
 import { deploymentKeys } from '@/entities/deployment/queries';
 import { commitsQuery } from '@/entities/project/queries';
 import type { Project } from '@/entities/project/types';
+import { runtimeKeys } from '@/entities/runtime/queries';
 import { ApiError } from '@/shared/api/client';
 import { formatDate, shortSha } from '@/shared/lib/format';
 import { Icon } from '@/shared/ui/Icon';
@@ -22,8 +23,12 @@ export function DeployPanel({ project }: { project: Project }) {
           ? { type: 'MAIN_HEAD' }
           : { type: 'MAIN_COMMIT', commitSha: selectedSha },
       ),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: deploymentKeys.project(project.id) }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: deploymentKeys.project(project.id) }),
+        queryClient.invalidateQueries({ queryKey: runtimeKeys.project(project.id) }),
+      ]);
+    },
   });
 
   const message = mutation.error instanceof ApiError ? mutation.error.message : null;

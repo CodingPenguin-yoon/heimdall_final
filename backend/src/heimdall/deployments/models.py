@@ -40,9 +40,32 @@ class Deployment:
     terminal_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeploymentJobClaim:
+    deployment: Deployment
+    token: UUID
+    worker_id: str
+    attempts: int
+    lease_expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentEvent:
+    id: int
+    deployment_id: UUID
+    stage: str
+    code: str
+    message: str
+    created_at: datetime
+
+
 class DeploymentNotFoundError(LookupError):
     pass
 
 
 class ActiveDeploymentError(RuntimeError):
+    pass
+
+
+class DeploymentClaimLostError(RuntimeError):
     pass

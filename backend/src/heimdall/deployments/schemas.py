@@ -7,7 +7,12 @@ from uuid import UUID
 from pydantic import model_validator
 
 from heimdall.common.api_model import ApiModel
-from heimdall.deployments.models import Deployment, DeploymentSource, DeploymentStatus
+from heimdall.deployments.models import (
+    Deployment,
+    DeploymentEvent,
+    DeploymentSource,
+    DeploymentStatus,
+)
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -65,3 +70,27 @@ class DeploymentRead(ApiModel):
 
 class DeploymentList(ApiModel):
     items: list[DeploymentRead]
+
+
+class DeploymentEventRead(ApiModel):
+    id: int
+    deployment_id: UUID
+    stage: str
+    code: str
+    message: str
+    created_at: datetime
+
+    @classmethod
+    def from_event(cls, event: DeploymentEvent) -> DeploymentEventRead:
+        return cls(
+            id=event.id,
+            deployment_id=event.deployment_id,
+            stage=event.stage,
+            code=event.code,
+            message=event.message,
+            created_at=event.created_at,
+        )
+
+
+class DeploymentEventList(ApiModel):
+    items: list[DeploymentEventRead]

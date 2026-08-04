@@ -155,6 +155,7 @@ class ProjectService:
                         "kind": "SECRET",
                         "secretReference": resolved.secret_reference,
                         "secretVersion": resolved.secret_version,
+                        "secretFingerprint": resolved.secret_fingerprint,
                     }
                 )
             service_snapshot["environment"] = environment

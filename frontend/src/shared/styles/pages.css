@@ -425,6 +425,41 @@ tbody tr:hover {
   background: var(--red);
 }
 
+.deployment-failure {
+  color: #b42318 !important;
+}
+
+.deployment-events {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.deployment-events > div {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.deployment-events span {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+
+.deployment-events p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.deployment-events time {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
 .deploy-panel {
   position: sticky;
   top: 1rem;

@@ -27,6 +27,7 @@ Public GitHub 저장소 등록
 - 수동 배포
 - exact commit source rebuild
 - 배포 상태, 이력, 실패 단계, 로그
+- 구조화 deployment event polling과 loopback stable preview link
 
 ## 초기 비범위
 
@@ -41,3 +42,4 @@ Public GitHub 저장소 등록
 - volume/data rollback
 - 다중 사용자와 역할
 - public domain, TLS, multi-host
+- application stdout/stderr 무제한 수집과 실시간 SSE

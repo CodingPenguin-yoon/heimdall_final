@@ -14,6 +14,7 @@ from heimdall.projects.models import Project, ProjectStatus
 
 SERVICE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+HTTP_PATH_PATTERN = re.compile(r"^/(?:[A-Za-z0-9._~-]+(?:/[A-Za-z0-9._~-]+)*)?$")
 
 
 def _repository_relative_path(value: str) -> str:
@@ -75,6 +76,8 @@ class EnvironmentVariableInput(ApiModel):
     def validate_value(self) -> EnvironmentVariableInput:
         if self.kind is EnvironmentVariableKind.PLAIN and self.value is None:
             raise ValueError("plain environment variable requires a value")
+        if self.value is not None and "\x00" in self.value:
+            raise ValueError("environment variable must not contain a null byte")
         return self
 
 
@@ -96,7 +99,7 @@ class ServiceConfig(ApiModel):
     @field_validator("health_path")
     @classmethod
     def validate_health_path(cls, value: str) -> str:
-        if not value.startswith("/") or "//" in value or "?" in value or "#" in value:
+        if HTTP_PATH_PATTERN.fullmatch(value) is None:
             raise ValueError("must be a canonical absolute path")
         return value
 
@@ -115,7 +118,7 @@ class RouteConfig(ApiModel):
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
-        if not value.startswith("/") or "//" in value or "?" in value or "#" in value:
+        if HTTP_PATH_PATTERN.fullmatch(value) is None:
             raise ValueError("must be a canonical absolute path")
         if value != "/" and value.endswith("/"):
             raise ValueError("must not end with a slash")
