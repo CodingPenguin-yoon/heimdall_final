@@ -163,9 +163,8 @@ class DockerRuntime:
             "SERVICES_STARTING",
             "Starting generation service containers",
         )
-        running: list[RunningService] = []
         for service in runtime.services:
-            arguments = self._run_arguments(
+            arguments = self._create_arguments(
                 deployment,
                 runtime.database,
                 service,
@@ -177,6 +176,26 @@ class DockerRuntime:
                 progress,
                 RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
             )
+
+        for service in runtime.services:
+            container = _container_name(deployment, service)
+            self._run(
+                ["start", container],
+                progress,
+                RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
+            )
+
+        # A service may exit during the first pass if it resolves another service at startup.
+        # Once every network endpoint has started, a second idempotent start lets it recover.
+        for service in runtime.services:
+            self._run(
+                ["start", _container_name(deployment, service)],
+                progress,
+                RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
+            )
+
+        running: list[RunningService] = []
+        for service in runtime.services:
             container = _container_name(deployment, service)
             port_result = self._run(
                 ["port", container, f"{service.internal_port}/tcp"],
@@ -279,7 +298,7 @@ class DockerRuntime:
             arguments = ["inspect", "--format", "{{json .Config.Labels}}", name]
         return self._run_ignored(arguments)
 
-    def _run_arguments(
+    def _create_arguments(
         self,
         deployment: Deployment,
         database: RuntimeDatabase | None,
@@ -288,8 +307,7 @@ class DockerRuntime:
         secret_store: SecretStore,
     ) -> list[str]:
         arguments = [
-            "run",
-            "--detach",
+            "create",
             "--name",
             _container_name(deployment, service),
             "--network",

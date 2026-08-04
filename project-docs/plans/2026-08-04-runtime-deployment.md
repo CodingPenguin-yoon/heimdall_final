@@ -91,7 +91,7 @@
 1. claim token을 발급하고 deployment를 `PREPARING`으로 전이한다.
 2. 격리된 workspace에 `main`을 fetch하고 SHA가 해당 ref의 commit인지 확인한 뒤 detached checkout한다.
 3. deployment·service별 deterministic image를 build한다.
-4. candidate network를 ensure하고 service container를 생성한다.
+4. candidate network와 모든 service container를 먼저 생성하고 전체 start 후 조기 종료 service를 한 번 더 idempotent start한다.
 5. loopback random port로 각 service health endpoint를 probe한다.
 6. gateway를 candidate network에 연결하고 candidate NGINX config를 별도 파일로 생성한다.
 7. `nginx -t`, atomic replace, reload, route probe를 순서대로 통과시킨다.
@@ -201,3 +201,5 @@ Docker release smoke에서는 단일 서비스와 multi-service를 image build�
 두 번째 deployment의 route probe를 의도적으로 실패시킨 smoke에서 새 deployment는 `FAILED/ACTIVATION/GATEWAY_ROUTE_PROBE_FAILED`로 종료됐으며 첫 번째 active deployment ID, stable preview port와 응답이 그대로 유지됐다. 모든 smoke resource는 project·deployment label을 확인한 정확한 candidate 대상으로 정리했다.
 
 로컬 API·Worker·Frontend를 함께 실행한 수동 UI 검증에서는 public `CodingPenguin-yoon/Heimdall` 저장소 등록, Web service 설정 저장, 최신 `main` 배포 요청, 단계별 event polling, `SUCCEEDED` 표시와 stable preview 링크의 실제 응답까지 확인했다. smoke 전용 Control DB·Managed DB volume과 runtime Docker resource는 검증 후 정확한 Compose project·Heimdall label 기준으로 삭제했다.
+
+`CodingPenguin-yoon/heimdall-test`의 frontend nginx가 backend DNS를 시작 시점에 해석하는 실제 multi-service 배포에서는 service 설정 순서와 무관하도록 모든 container를 먼저 create하고, 전체 start 뒤 조기 종료 service를 한 번 더 start한 다음 health port를 조회했다. frontend가 backend보다 먼저 설정된 snapshot에서도 두 service health, stable preview `/`, `/api/status`와 Managed PostgreSQL 연결을 확인했다.

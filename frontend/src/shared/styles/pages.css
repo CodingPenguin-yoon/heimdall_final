@@ -283,6 +283,68 @@ tbody tr:hover {
   font-size: 0.75rem;
 }
 
+.preview-access-panel {
+  display: grid;
+  align-items: center;
+  gap: 0.8rem 1.2rem;
+  padding: 1rem 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #f8fafc;
+  grid-template-columns: minmax(140px, 0.3fr) minmax(0, 1fr);
+}
+
+.preview-access-panel h2 {
+  margin: 0.12rem 0 0;
+  font-size: 1rem;
+}
+
+.preview-access-panel > p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.68rem;
+  grid-column: 2;
+}
+
+.preview-access-active {
+  border-color: #bfd6ff;
+  background: linear-gradient(145deg, #f7faff, #eef5ff);
+}
+
+.preview-access-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.preview-url {
+  overflow: hidden;
+  color: #1e4f9b;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-access-empty {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.preview-access-empty strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.preview-access-empty span {
+  color: var(--text-soft);
+  font-size: 0.72rem;
+}
+
 .setup-banner {
   display: flex;
   align-items: center;
@@ -539,9 +601,18 @@ tbody tr:hover {
   }
 
   .project-hero,
-  .setup-banner {
+  .setup-banner,
+  .preview-access-value {
     align-items: start;
     flex-direction: column;
+  }
+
+  .preview-access-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-access-panel > p {
+    grid-column: 1;
   }
 
   .topology-list article {

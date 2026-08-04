@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from http.client import RemoteDisconnected
 from pathlib import Path
 from urllib.error import URLError
@@ -137,17 +138,70 @@ def test_docker_candidate_uses_file_mounts_and_service_scoped_managed_values(
     )
 
     commands = [call[0] for call in runner.calls]
-    run_command = next(command for command in commands if command[1] == "run")
-    command_text = " ".join(run_command)
-    assert "APP_ENV=production" in run_command
-    assert "JWT_SECRET=/run/secrets/heimdall/environment/jwt_secret" in run_command
-    assert "DATABASE_PASSWORD_FILE=/run/secrets/heimdall/project-database-password" in run_command
+    create_command = next(command for command in commands if command[1] == "create")
+    command_text = " ".join(create_command)
+    assert "APP_ENV=production" in create_command
+    assert "JWT_SECRET=/run/secrets/heimdall/environment/jwt_secret" in create_command
+    assert (
+        "DATABASE_PASSWORD_FILE=/run/secrets/heimdall/project-database-password" in create_command
+    )
     assert "user-secret-canary" not in command_text
     assert "database-secret-canary" not in command_text
     assert any(command[1:3] == ["network", "connect"] for command in commands)
     assert candidate.services[0].health_port == 49152
     assert probe.urls == ["http://127.0.0.1:49152/health"]
     assert progress.stages == ["BUILDING", "STARTING", "HEALTH_CHECKING"]
+
+
+def test_candidate_creates_all_containers_and_retries_start_before_port_lookup(
+    tmp_path: Path,
+) -> None:
+    item = runtime_deployment()
+    snapshot = deepcopy(item.config_snapshot)
+    snapshot["services"].insert(
+        0,
+        {
+            "name": "web",
+            "build": {"context": ".", "dockerfile": "Dockerfile"},
+            "internalPort": 80,
+            "healthPath": "/",
+            "projectDatabaseAccess": False,
+            "environment": [],
+        },
+    )
+    snapshot["routes"] = [
+        {"path": "/", "service": "web"},
+        {"path": "/api", "service": "api"},
+    ]
+    object.__setattr__(item, "config_snapshot", snapshot)
+    runtime = RuntimeDeployment.from_deployment(item)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    secrets = FilePaths(tmp_path)
+    user_secret = runtime.services[1].secrets[0]
+    database = runtime.database
+    assert database is not None
+    secrets.add(user_secret.reference, "user-secret-canary")
+    secrets.add(database.credential_reference, "database-secret-canary")
+    runner = RecordingRunner()
+
+    DockerRuntime(runner, RecordingProbe()).start_candidate(
+        item, runtime, source, secrets, RecordingProgress()
+    )
+
+    commands = [call[0] for call in runner.calls]
+    lifecycle = [command[1] for command in commands if command[1] in {"create", "start", "port"}]
+    assert lifecycle == [
+        "create",
+        "create",
+        "start",
+        "start",
+        "start",
+        "start",
+        "port",
+        "port",
+    ]
 
 
 def test_candidate_cleanup_targets_only_deterministic_deployment_resources(tmp_path: Path) -> None:

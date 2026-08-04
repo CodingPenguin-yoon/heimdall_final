@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router';
 import { deploymentEventsQuery, deploymentsQuery } from '@/entities/deployment/queries';
 import { projectQuery } from '@/entities/project/queries';
 import { StatusBadge } from '@/entities/project/StatusBadge';
+import { PreviewAccessPanel } from '@/entities/runtime/PreviewAccessPanel';
 import { projectRuntimeQuery } from '@/entities/runtime/queries';
 import { DeployPanel } from '@/features/deploy-project/DeployPanel';
 import { ProjectDatabasePanel } from '@/features/provision-database/ProjectDatabasePanel';
@@ -43,21 +44,13 @@ export function ProjectDetailPage() {
           </div>
         </div>
         <div className="hero-actions">
-          {runtime.data?.status === 'ACTIVE' && runtime.data.previewPort ? (
-            <a
-              href={`http://${window.location.hostname}:${runtime.data.previewPort}`}
-              target="_blank"
-              rel="noreferrer"
-              className="button primary"
-            >
-              Preview 열기 <Icon name="arrow" />
-            </a>
-          ) : null}
           <Link to={`/projects/${projectId}/settings`} className="button secondary">
             <Icon name="settings" /> 프로젝트 설정
           </Link>
         </div>
       </header>
+
+      <PreviewAccessPanel runtime={runtime.data} />
 
       {project.data.status === 'DRAFT' ? (
         <section className="setup-banner">
