@@ -80,3 +80,11 @@ def test_settings_reject_reserved_environment(name: str) -> None:
 
     with pytest.raises(ValidationError, match="reserved"):
         ProjectSettingsUpdate.model_validate(payload)
+
+
+def test_route_rejects_nginx_configuration_characters() -> None:
+    payload = valid_settings()
+    payload["routes"][0]["path"] = "/;return 200"
+
+    with pytest.raises(ValidationError):
+        ProjectSettingsUpdate.model_validate(payload)

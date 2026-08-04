@@ -72,6 +72,7 @@ def test_secret_environment_is_stored_as_reference_and_redacted_from_response() 
     snapshot = updated.deployment_config["services"][1]["environment"]
     assert snapshot[0]["value"] == "production"
     assert snapshot[1]["secretReference"].endswith("v1.secret")
+    assert snapshot[1]["secretFingerprint"] == f"{1:064x}"
     assert "never-return-this" not in str(updated.deployment_config)
     assert response["deploymentConfig"]["services"][1]["environment"][1] == {
         "name": "JWT_SECRET",

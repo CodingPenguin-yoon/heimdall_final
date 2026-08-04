@@ -18,6 +18,8 @@ Python Worker -> PostgreSQL claim/lease
 
 API와 Worker는 같은 Python package를 사용하지만 별도 command로 실행한다. Docker socket은 Worker만 사용한다.
 
+API와 Worker가 동시에 시작될 수 있으므로 schema migration은 PostgreSQL advisory transaction lock으로 직렬화한다.
+
 ## Backend 모듈
 
 ```text
@@ -82,6 +84,10 @@ QUEUED -> PREPARING -> BUILDING -> STARTING -> HEALTH_CHECKING
 
 project별 terminal 이전 deployment는 최대 하나다. PostgreSQL job row는 전달과 lease를 담당하고 deployment row가 제품 상태의 최종 원본이다.
 
+매 claim은 새로운 UUID token을 발급한다. 상태 전이, lease renew, retry와 terminal write는 worker ID와 token이 모두 현재 row와 일치할 때만 허용된다. lease가 만료되면 `CLAIMED` job을 새 Worker가 회수하며 이전 Worker는 Control DB를 더 이상 갱신할 수 없다.
+
+`deployment_events`는 Worker가 생성한 bounded message와 stable code만 저장한다. child process stderr와 application stdout, environment 원문은 저장하지 않는다.
+
 ## Runtime generation
 
 - 배포마다 전용 Docker network를 만든다.
@@ -89,3 +95,9 @@ project별 terminal 이전 deployment는 최대 하나다. PostgreSQL job row는
 - project NGINX는 기존·candidate network에 잠시 함께 연결될 수 있다.
 - 새 설정은 `nginx -t`, atomic replace, reload, route probe를 통과해야 effective 상태가 된다.
 - 실패하면 last-known-good config를 복구하고 candidate만 정리한다.
+- `project_runtimes`는 project gateway, stable loopback preview port, active deployment·network·container·image 이름의 최종 원본이다.
+- source workspace와 generated NGINX config는 Control DB 밖 runtime root에 둔다.
+- health probe는 image 내부 도구를 요구하지 않도록 service port를 임시 loopback port에 publish해 수행한다.
+- NGINX는 generation별 DNS alias를 사용하므로 old·candidate network에 동시에 연결돼도 upstream이 모호하지 않다.
+- 성공 metadata commit 뒤 이전 generation을 정리하고, 실패 시 active metadata와 이전 generation을 보존한다.
+- Docker cleanup 전에 managed label과 deployment ID를 다시 검사하며 이름만 일치하는 외부 resource는 변경하지 않는다.

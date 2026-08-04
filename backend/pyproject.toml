@@ -13,9 +13,12 @@ dependencies = [
   "uvicorn[standard]>=0.35,<1",
 ]
 
+[project.scripts]
+heimdall-worker = "heimdall.worker:main"
+
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28,<1",
+  "httpx2>=2.7,<3",
   "pytest>=8.4,<10",
   "pytest-cov>=6,<8",
   "ruff>=0.12,<1",

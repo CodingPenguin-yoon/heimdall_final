@@ -22,3 +22,12 @@ export interface Deployment {
   updatedAt: string;
   terminalAt: string | null;
 }
+
+export interface DeploymentEvent {
+  id: number;
+  deploymentId: string;
+  stage: string;
+  code: string;
+  message: string;
+  createdAt: string;
+}

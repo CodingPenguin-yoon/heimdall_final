@@ -22,6 +22,8 @@ class SecretStore(Protocol):
 
     def read(self, reference: str, fingerprint: str) -> str: ...
 
+    def resolve(self, reference: str, fingerprint: str) -> Path: ...
+
 
 class SecretStoreError(RuntimeError):
     pass
@@ -55,11 +57,16 @@ class FileSecretStore:
         return StoredSecret(reference=reference, version=version, fingerprint=fingerprint)
 
     def read(self, reference: str, fingerprint: str) -> str:
+        path = self.resolve(reference, fingerprint)
+        payload = _read_private_file(path)
+        return payload.decode("utf-8")
+
+    def resolve(self, reference: str, fingerprint: str) -> Path:
         path = self._resolve(_safe_relative(reference))
         payload = _read_private_file(path)
         if hashlib.sha256(payload).hexdigest() != fingerprint:
             raise SecretStoreError("secret fingerprint does not match metadata")
-        return payload.decode("utf-8")
+        return path
 
     def _resolve(self, relative: PurePosixPath) -> Path:
         candidate = self._root.joinpath(*relative.parts)

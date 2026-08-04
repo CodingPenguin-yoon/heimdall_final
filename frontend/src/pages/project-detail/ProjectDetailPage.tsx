@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 
-import { deploymentsQuery } from '@/entities/deployment/queries';
+import { deploymentEventsQuery, deploymentsQuery } from '@/entities/deployment/queries';
 import { projectQuery } from '@/entities/project/queries';
 import { StatusBadge } from '@/entities/project/StatusBadge';
+import { PreviewAccessPanel } from '@/entities/runtime/PreviewAccessPanel';
+import { projectRuntimeQuery } from '@/entities/runtime/queries';
 import { DeployPanel } from '@/features/deploy-project/DeployPanel';
 import { ProjectDatabasePanel } from '@/features/provision-database/ProjectDatabasePanel';
 import { formatDate, shortSha } from '@/shared/lib/format';
@@ -13,6 +15,11 @@ export function ProjectDetailPage() {
   const { projectId = '' } = useParams();
   const project = useQuery(projectQuery(projectId));
   const deployments = useQuery(deploymentsQuery(projectId));
+  const runtime = useQuery(projectRuntimeQuery(projectId));
+  const latestDeployment = deployments.data?.items[0];
+  const latestDeploymentActive =
+    latestDeployment !== undefined && !['SUCCEEDED', 'FAILED'].includes(latestDeployment.status);
+  const events = useQuery(deploymentEventsQuery(latestDeployment?.id, latestDeploymentActive));
 
   if (project.isLoading) return <div className="loading-page">프로젝트를 불러오는 중입니다.</div>;
   if (!project.data) return <div className="loading-page">프로젝트를 찾을 수 없습니다.</div>;
@@ -42,6 +49,8 @@ export function ProjectDetailPage() {
           </Link>
         </div>
       </header>
+
+      <PreviewAccessPanel runtime={runtime.data} />
 
       {project.data.status === 'DRAFT' ? (
         <section className="setup-banner">
@@ -121,6 +130,11 @@ export function ProjectDetailPage() {
                     <div>
                       <strong>{deployment.status.replaceAll('_', ' ')}</strong>
                       <span>{formatDate(deployment.createdAt)}</span>
+                      {deployment.failureCode ? (
+                        <small className="deployment-failure">
+                          {deployment.failureStage} · {deployment.failureCode}
+                        </small>
+                      ) : null}
                     </div>
                     <code>{shortSha(deployment.resolvedCommitSha)}</code>
                     <small>Config v{deployment.configVersion}</small>
@@ -130,6 +144,18 @@ export function ProjectDetailPage() {
             ) : (
               <div className="empty-panel compact-empty">아직 배포 요청이 없습니다.</div>
             )}
+            {latestDeployment && events.data?.items.length ? (
+              <div className="deployment-events">
+                <strong>Latest activity</strong>
+                {events.data.items.slice(-6).map((event) => (
+                  <div key={event.id}>
+                    <span>{event.stage.replaceAll('_', ' ')}</span>
+                    <p>{event.message}</p>
+                    <time>{formatDate(event.createdAt)}</time>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </section>
         </div>
 

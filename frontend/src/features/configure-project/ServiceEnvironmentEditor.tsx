@@ -39,7 +39,9 @@ export function ServiceEnvironmentEditor({
         <div className="environment-heading">
           <div>
             <strong>Environment variables</strong>
-            <span>DATABASE_*와 HEIMDALL_*는 예약 이름입니다.</span>
+            <span>
+              DATABASE_*와 HEIMDALL_*는 예약 이름이며 Secret 변수에는 파일 경로가 전달됩니다.
+            </span>
           </div>
           <button
             type="button"
