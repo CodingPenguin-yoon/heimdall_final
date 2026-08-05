@@ -25,6 +25,7 @@ class Settings:
     worker_lease_seconds: float
     worker_poll_seconds: float
     worker_max_attempts: int
+    runtime_retention_hours: float
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -66,4 +67,5 @@ class Settings:
             worker_lease_seconds=float(os.environ.get("HEIMDALL_WORKER_LEASE_SECONDS", "120")),
             worker_poll_seconds=float(os.environ.get("HEIMDALL_WORKER_POLL_SECONDS", "1")),
             worker_max_attempts=int(os.environ.get("HEIMDALL_WORKER_MAX_ATTEMPTS", "3")),
+            runtime_retention_hours=float(os.environ.get("HEIMDALL_RUNTIME_RETENTION_HOURS", "72")),
         )

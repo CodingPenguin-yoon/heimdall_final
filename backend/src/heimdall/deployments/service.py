@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from copy import deepcopy
+from datetime import datetime
 from uuid import UUID
 
 from heimdall.common.errors import AppError
@@ -10,6 +11,7 @@ from heimdall.deployments.models import (
     Deployment,
     DeploymentEvent,
     DeploymentNotFoundError,
+    DeploymentReconciliationConflictError,
     DeploymentSource,
 )
 from heimdall.deployments.repository import DeploymentRepository
@@ -86,6 +88,21 @@ class DeploymentService:
             return self._repository.get(deployment_id)
         except DeploymentNotFoundError as error:
             raise AppError(404, "DEPLOYMENT_NOT_FOUND", "Deployment was not found") from error
+
+    def list_uncertain_before(self, cutoff: datetime) -> Sequence[Deployment]:
+        return self._repository.list_uncertain_before(cutoff)
+
+    def reconcile_succeeded(self, deployment_id: UUID) -> Deployment:
+        try:
+            return self._repository.reconcile_succeeded(deployment_id)
+        except DeploymentNotFoundError as error:
+            raise AppError(404, "DEPLOYMENT_NOT_FOUND", "Deployment was not found") from error
+        except DeploymentReconciliationConflictError as error:
+            raise AppError(
+                409,
+                "DEPLOYMENT_RECONCILIATION_CONFLICT",
+                "Deployment state cannot be reconciled as active",
+            ) from error
 
     def events(self, deployment_id: UUID) -> Sequence[DeploymentEvent]:
         self.get(deployment_id)

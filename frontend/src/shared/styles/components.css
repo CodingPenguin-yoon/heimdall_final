@@ -45,6 +45,15 @@
   background: var(--surface-subtle);
 }
 
+.button.danger {
+  color: #fff;
+  background: var(--red);
+}
+
+.button.danger:hover:not(:disabled) {
+  background: #b42318;
+}
+
 .button.dashed {
   width: 100%;
   color: #475467;

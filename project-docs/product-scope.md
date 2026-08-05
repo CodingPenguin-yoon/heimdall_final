@@ -28,6 +28,7 @@ Public GitHub 저장소 등록
 - exact commit source rebuild
 - 배포 상태, 이력, 실패 단계, 로그
 - 구조화 deployment event polling과 loopback stable preview link
+- 불확실 runtime 보존, 자동 안전 재확인과 관리자 confirmed cleanup
 
 ## 초기 비범위
 

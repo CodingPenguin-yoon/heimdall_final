@@ -69,3 +69,7 @@ class ActiveDeploymentError(RuntimeError):
 
 class DeploymentClaimLostError(RuntimeError):
     pass
+
+
+class DeploymentReconciliationConflictError(RuntimeError):
+    pass

@@ -8,6 +8,7 @@ import { PreviewAccessPanel } from '@/entities/runtime/PreviewAccessPanel';
 import { projectRuntimeQuery } from '@/entities/runtime/queries';
 import { DeployPanel } from '@/features/deploy-project/DeployPanel';
 import { ProjectDatabasePanel } from '@/features/provision-database/ProjectDatabasePanel';
+import { RuntimeReconciliationPanel } from '@/features/reconcile-runtime/RuntimeReconciliationPanel';
 import { formatDate, shortSha } from '@/shared/lib/format';
 import { Icon } from '@/shared/ui/Icon';
 
@@ -138,6 +139,9 @@ export function ProjectDetailPage() {
                     </div>
                     <code>{shortSha(deployment.resolvedCommitSha)}</code>
                     <small>Config v{deployment.configVersion}</small>
+                    {deployment.failureCode === 'RECOVERY_STATE_UNCERTAIN' ? (
+                      <RuntimeReconciliationPanel deployment={deployment} projectId={projectId} />
+                    ) : null}
                   </article>
                 ))}
               </div>

@@ -491,6 +491,69 @@ tbody tr:hover {
   color: #b42318 !important;
 }
 
+.runtime-reconciliation {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  background: #fffaf3;
+  grid-column: 1 / -1;
+}
+
+.runtime-reconciliation-heading {
+  display: flex !important;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.runtime-reconciliation-heading p,
+.reconciliation-warning {
+  margin: 0.18rem 0 0;
+  color: #8a5a25;
+  font-size: 0.7rem;
+  white-space: normal;
+}
+
+.reconciliation-state {
+  padding: 0.28rem 0.48rem;
+  color: #9a5b13 !important;
+  border-radius: 999px;
+  background: #ffedd5;
+  font-weight: 750;
+}
+
+.state-resolved {
+  color: var(--green) !important;
+  background: var(--green-soft);
+}
+
+.state-blocked {
+  color: var(--red) !important;
+  background: var(--red-soft);
+}
+
+.reconciliation-actions {
+  display: grid;
+  align-items: end;
+  gap: 0.6rem;
+  grid-template-columns: auto minmax(190px, 1fr) auto;
+}
+
+.reconciliation-actions label {
+  font-size: 0.68rem;
+}
+
+.reconciliation-actions input {
+  min-height: 38px;
+  font-size: 0.7rem;
+}
+
+.reconciliation-warning {
+  color: #9f491f;
+}
+
 .deployment-events {
   display: grid;
   gap: 10px;
@@ -808,6 +871,10 @@ tbody tr:hover {
 }
 
 @media (max-width: 720px) {
+  .reconciliation-actions {
+    grid-template-columns: 1fr;
+  }
+
   .environment-row {
     grid-template-columns: 1fr 100px auto;
   }

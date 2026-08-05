@@ -108,6 +108,26 @@ class DockerDeploymentProcessor:
         self._docker.cleanup_candidate(deployment, runtime)
         self._remove_workspace(self._workspace(deployment))
 
+    def cleanup_candidate_verified(self, deployment: Deployment, progress: RuntimeProgress) -> None:
+        try:
+            runtime = RuntimeDeployment.from_deployment(deployment)
+        except RuntimeConfigurationError as error:
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "SNAPSHOT_INVALID",
+                cleanup_candidate=False,
+            ) from error
+        if self._activator.is_active(deployment):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "ACTIVE_GENERATION_CANNOT_BE_CLEANED",
+                cleanup_candidate=False,
+            )
+        self._activator.rollback_candidate(deployment)
+        progress.heartbeat()
+        self._docker.cleanup_candidate_verified(deployment, runtime, progress)
+        self._remove_workspace(self._workspace(deployment))
+
     def _workspace(self, deployment: Deployment) -> Path:
         return self._workspace_root / deployment.id.hex
 

@@ -9,6 +9,7 @@ from threading import Event
 from heimdall.config import Settings
 from heimdall.database import Database
 from heimdall.deployments.repository import PostgresDeploymentRepository
+from heimdall.deployments.service import DeploymentService
 from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
@@ -16,6 +17,8 @@ from heimdall.projects.service import ProjectService
 from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.process import SubprocessCommandRunner
+from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
+from heimdall.runtime.reconciliation_worker import RuntimeReconciliationWorker
 from heimdall.runtime.repository import PostgresRuntimeRepository
 from heimdall.runtime.service import DockerDeploymentProcessor
 from heimdall.secrets.store import FileSecretStore
@@ -38,6 +41,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
         )
         projects = ProjectService(PostgresProjectRepository(database), git, secret_store)
         deployments = PostgresDeploymentRepository(database)
+        deployment_service = DeploymentService(deployments, projects)
         runtimes = PostgresRuntimeRepository(database)
         docker = DockerRuntime(
             runner,
@@ -65,15 +69,28 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             secret_store,
             app_settings.git_workspace_root,
         )
+        worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        lease_duration = timedelta(seconds=app_settings.worker_lease_seconds)
         worker = DeploymentWorker(
             deployments,
             processor,
-            worker_id=f"{socket.gethostname()}:{os.getpid()}",
-            lease_duration=timedelta(seconds=app_settings.worker_lease_seconds),
+            worker_id=worker_id,
+            lease_duration=lease_duration,
+            max_attempts=app_settings.worker_max_attempts,
+        )
+        reconciliation_worker = RuntimeReconciliationWorker(
+            PostgresRuntimeReconciliationRepository(database),
+            deployment_service,
+            processor,
+            worker_id=worker_id,
+            lease_duration=lease_duration,
+            retention_duration=timedelta(hours=app_settings.runtime_retention_hours),
             max_attempts=app_settings.worker_max_attempts,
         )
         while not stop_event.is_set():
-            if not worker.run_once():
+            if worker.run_once():
+                continue
+            if not reconciliation_worker.run_once():
                 stop_event.wait(app_settings.worker_poll_seconds)
     finally:
         database.close()

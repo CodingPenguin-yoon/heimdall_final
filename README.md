@@ -117,3 +117,16 @@ label을 비교한다. 실제 target이 정상 서비스 중이면 남은 성공
 generation이 서비스 중임을 확인한 뒤에만 candidate를 다시 만든다. 상태를 확정할 수 없으면
 candidate를 보존하며, 반복 crash는 `HEIMDALL_WORKER_MAX_ATTEMPTS` 상한 뒤 안정적인 recovery
 failure로 종료한다.
+
+## Preserved runtime reconciliation
+
+`RECOVERY_STATE_UNCERTAIN`으로 끝난 deployment의 Docker resource는 즉시 삭제하지 않는다.
+기본 72시간(`HEIMDALL_RUNTIME_RETENTION_HOURS`) 동안 보존한 뒤 Worker가 DB, NGINX marker와
+exact Docker label을 다시 확인한다. target이 실제 active면 deployment를 성공으로 수렴시키고,
+이전 generation이 안전하게 응답하면 target candidate만 정리한다. 여전히 불확실하면
+`BLOCKED`로 남기며 자동 삭제하지 않는다.
+
+관리 UI에서 보존 기간 전에도 안전 재확인을 요청할 수 있다. 강제 정리는 전체 Deployment ID를
+확인값으로 입력해야 하며, Control DB가 active로 기록한 generation과 label이 일치하지 않는
+resource는 삭제하지 않는다. API는 요청을 DB에만 기록하고 실제 Docker 작업은 lease를 획득한
+Worker가 수행한다.

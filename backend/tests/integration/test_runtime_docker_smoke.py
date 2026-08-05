@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.request import urlopen
@@ -130,6 +131,9 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
     )
     source = Path(__file__).parents[1] / "fixtures" / "runtime-single"
     candidate = None
+    cleanup_candidate = None
+    cleanup_deployment = None
+    cleanup_runtime = None
     try:
         candidate = docker.start_candidate(
             deployment,
@@ -163,7 +167,51 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
 
         assert gateway.recover(deployment, runtime, Progress()) is RecoveryDisposition.ACTIVE
         assert runtimes.item.active_deployment_id == deployment.id
+
+        cleanup_deployment = replace(deployment, id=uuid4())
+        cleanup_runtime = RuntimeDeployment.from_deployment(cleanup_deployment)
+        cleanup_candidate = docker.start_candidate(
+            cleanup_deployment,
+            cleanup_runtime,
+            source,
+            FileSecretStore(tmp_path / "cleanup-secrets"),
+            Progress(),
+        )
+        docker.cleanup_candidate_verified(cleanup_deployment, cleanup_runtime, Progress())
+        assert (
+            runner.run(
+                ["docker", "network", "inspect", cleanup_candidate.network_name],
+                timeout_seconds=30,
+                check=False,
+            ).returncode
+            != 0
+        )
+        for service in cleanup_candidate.services:
+            assert (
+                runner.run(
+                    ["docker", "inspect", service.container_name],
+                    timeout_seconds=30,
+                    check=False,
+                ).returncode
+                != 0
+            )
+            assert (
+                runner.run(
+                    ["docker", "image", "inspect", service.image_name],
+                    timeout_seconds=30,
+                    check=False,
+                ).returncode
+                != 0
+            )
+        with urlopen(
+            f"http://127.0.0.1:{runtimes.item.preview_port}/",
+            timeout=3,
+        ) as response:
+            assert response.headers["X-Heimdall-Deployment-Id"] == str(deployment.id)
+            assert response.read() == b"heimdall runtime smoke\n"
     finally:
+        if cleanup_deployment is not None and cleanup_runtime is not None:
+            docker.cleanup_candidate(cleanup_deployment, cleanup_runtime)
         gateway_name = f"hm-p{project_id.hex[:12]}-gateway"
         runner.run(
             ["docker", "rm", "--force", gateway_name],

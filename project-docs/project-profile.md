@@ -36,6 +36,9 @@
   generation을 확정하고, 불확실한 candidate는 삭제하지 않으며 attempt 상한을 적용한다.
 - Docker resource는 project·deployment label과 deterministic generation name을 사용한다.
 - cleanup은 label과 deployment ID가 일치하는 candidate와 이전 generation만 대상으로 한다.
+- 불확실한 failed candidate는 설정된 기간 동안 보존하고 durable reconciliation Worker가
+  재확인한다. 자동 경로는 안전 판정이 없으면 삭제하지 않으며 관리자 force cleanup은 전체
+  deployment ID 확인과 DB active guard를 요구한다.
 - project runtime은 active deployment와 host loopback stable preview port를 Control DB에 저장한다.
 - API와 UI는 application stdout 원문 대신 raw secret이 없는 구조화 deployment event를 제공한다.
 - service별 사용자 환경변수와 project database 접근 여부를 설정한다.

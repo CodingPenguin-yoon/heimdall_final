@@ -16,6 +16,7 @@ from heimdall.deployments.models import (
     DeploymentEvent,
     DeploymentJobClaim,
     DeploymentNotFoundError,
+    DeploymentReconciliationConflictError,
     DeploymentSource,
     DeploymentStatus,
 )
@@ -34,6 +35,8 @@ class DeploymentRepository(Protocol):
     ) -> Deployment: ...
 
     def list_for_project(self, project_id: UUID) -> Sequence[Deployment]: ...
+
+    def list_uncertain_before(self, cutoff: datetime, limit: int = 100) -> Sequence[Deployment]: ...
 
     def get(self, deployment_id: UUID) -> Deployment: ...
 
@@ -61,6 +64,8 @@ class DeploymentRepository(Protocol):
     ) -> Deployment: ...
 
     def list_events(self, deployment_id: UUID, limit: int = 100) -> Sequence[DeploymentEvent]: ...
+
+    def reconcile_succeeded(self, deployment_id: UUID) -> Deployment: ...
 
 
 class PostgresDeploymentRepository:
@@ -124,6 +129,23 @@ class PostgresDeploymentRepository:
                 LIMIT 50
                 """,
                 (project_id,),
+            ).fetchall()
+        return [_deployment(row) for row in rows]
+
+    def list_uncertain_before(self, cutoff: datetime, limit: int = 100) -> Sequence[Deployment]:
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM deployments
+                WHERE status = 'FAILED'
+                  AND failure_stage = 'RECOVERY'
+                  AND failure_code = 'RECOVERY_STATE_UNCERTAIN'
+                  AND terminal_at IS NOT NULL
+                  AND terminal_at <= %s
+                ORDER BY terminal_at, id
+                LIMIT %s
+                """,
+                (cutoff, limit),
             ).fetchall()
         return [_deployment(row) for row in rows]
 
@@ -365,6 +387,43 @@ class PostgresDeploymentRepository:
                 (deployment_id, limit),
             ).fetchall()
         return [_event(row) for row in reversed(rows)]
+
+    def reconcile_succeeded(self, deployment_id: UUID) -> Deployment:
+        now = datetime.now(UTC)
+        with self._database.connection() as connection:
+            current = connection.execute(
+                "SELECT * FROM deployments WHERE id = %s FOR UPDATE",
+                (deployment_id,),
+            ).fetchone()
+            if current is None:
+                raise DeploymentNotFoundError
+            if current["status"] == DeploymentStatus.SUCCEEDED.value:
+                return _deployment(current)
+            if not (
+                current["status"] == DeploymentStatus.FAILED.value
+                and current["failure_stage"] == "RECOVERY"
+                and current["failure_code"] == "RECOVERY_STATE_UNCERTAIN"
+            ):
+                raise DeploymentReconciliationConflictError
+            row = connection.execute(
+                """
+                UPDATE deployments
+                SET status = 'SUCCEEDED', failure_stage = NULL, failure_code = NULL,
+                    updated_at = %s, terminal_at = %s
+                WHERE id = %s
+                RETURNING *
+                """,
+                (now, now, deployment_id),
+            ).fetchone()
+            self._insert_event(
+                connection,
+                deployment_id,
+                DeploymentStatus.SUCCEEDED.value,
+                "DEPLOYMENT_RECONCILED_ACTIVE",
+                "The preserved runtime was verified and restored as the active deployment",
+                now,
+            )
+        return _deployment(row)
 
     @staticmethod
     def _lock_claim(connection, claim: DeploymentJobClaim, now: datetime) -> None:

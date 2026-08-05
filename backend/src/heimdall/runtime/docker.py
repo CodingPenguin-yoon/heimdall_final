@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from http.client import RemoteDisconnected
 from pathlib import Path
 from typing import Protocol
@@ -65,6 +66,13 @@ class RunningService:
 class CandidateGeneration:
     network_name: str
     services: tuple[RunningService, ...]
+
+
+class _ResourceState(StrEnum):
+    EXACT = "EXACT"
+    ABSENT = "ABSENT"
+    CONFLICT = "CONFLICT"
+    UNKNOWN = "UNKNOWN"
 
 
 class DockerRuntime:
@@ -248,6 +256,80 @@ class DockerRuntime:
             if self._is_managed("image", image, deployment.id):
                 self._run_ignored(["image", "rm", "--force", image])
 
+    def cleanup_candidate_verified(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        progress: RuntimeProgress,
+    ) -> None:
+        resources = [
+            *(("container", _container_name(deployment, service)) for service in runtime.services),
+            ("network", _network_name(deployment)),
+            *(("image", _image_name(deployment, service)) for service in runtime.services),
+        ]
+        before = {
+            resource: self._resource_state(*resource, deployment, heartbeat=progress.heartbeat)
+            for resource in resources
+        }
+        if any(state is _ResourceState.UNKNOWN for state in before.values()):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "CANDIDATE_RESOURCE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        if any(state is _ResourceState.CONFLICT for state in before.values()):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "CANDIDATE_RESOURCE_NAME_CONFLICT",
+                cleanup_candidate=False,
+            )
+
+        for kind, name in resources:
+            if before[(kind, name)] is not _ResourceState.EXACT:
+                continue
+            if kind == "network":
+                self._run_ignored(
+                    [
+                        "network",
+                        "disconnect",
+                        "--force",
+                        name,
+                        self._managed_database_container,
+                    ],
+                    heartbeat=progress.heartbeat,
+                )
+                self._run_ignored(["network", "rm", name], heartbeat=progress.heartbeat)
+            elif kind == "image":
+                self._run_ignored(["image", "rm", "--force", name], heartbeat=progress.heartbeat)
+            else:
+                self._run_ignored(["rm", "--force", name], heartbeat=progress.heartbeat)
+
+        after = {
+            resource: self._resource_state(*resource, deployment, heartbeat=progress.heartbeat)
+            for resource in resources
+        }
+        if any(state is _ResourceState.UNKNOWN for state in after.values()):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "CANDIDATE_RESOURCE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        if any(state is _ResourceState.CONFLICT for state in after.values()):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "CANDIDATE_RESOURCE_NAME_CONFLICT",
+                cleanup_candidate=False,
+            )
+        if any(state is _ResourceState.EXACT for state in after.values()):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "CANDIDATE_CLEANUP_INCOMPLETE",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+
     def observe_candidate(
         self,
         deployment: Deployment,
@@ -339,6 +421,32 @@ class DockerRuntime:
             and labels.get("heimdall.managed") == "true"
             and labels.get("heimdall.deployment-id") == str(deployment_id)
         )
+
+    def _resource_state(
+        self,
+        kind: str,
+        name: str,
+        deployment: Deployment,
+        *,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> _ResourceState:
+        result = self._inspect(kind, name, heartbeat=heartbeat)
+        if result.returncode == -1:
+            return _ResourceState.UNKNOWN
+        if result.returncode != 0:
+            return _ResourceState.ABSENT
+        try:
+            labels = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError):
+            return _ResourceState.CONFLICT
+        if (
+            isinstance(labels, dict)
+            and labels.get("heimdall.managed") == "true"
+            and labels.get("heimdall.project-id") == str(deployment.project_id)
+            and labels.get("heimdall.deployment-id") == str(deployment.id)
+        ):
+            return _ResourceState.EXACT
+        return _ResourceState.CONFLICT
 
     def _assert_absent(self, kind: str, name: str) -> None:
         if self._inspect(kind, name).returncode == 0:

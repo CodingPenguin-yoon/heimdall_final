@@ -31,3 +31,18 @@ export interface DeploymentEvent {
   message: string;
   createdAt: string;
 }
+
+export type RuntimeReconciliationAction = 'RECONCILE' | 'FORCE_CLEANUP';
+
+export interface RuntimeReconciliation {
+  deploymentId: string;
+  state: 'RETAINED' | 'PENDING' | 'CLAIMED' | 'RESOLVED' | 'BLOCKED';
+  action: RuntimeReconciliationAction;
+  requestedBy: 'SYSTEM' | 'ADMIN';
+  result: 'ACTIVE' | 'CLEANED' | 'UNCERTAIN' | null;
+  resultCode: string | null;
+  attempts: number;
+  availableAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}

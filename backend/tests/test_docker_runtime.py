@@ -73,6 +73,45 @@ class ConflictingResourceRunner(RecordingRunner):
         return CommandResult(0, "")
 
 
+class VerifiedCleanupRunner(RecordingRunner):
+    def __init__(self, project_id: str, deployment_id: str) -> None:
+        super().__init__(deployment_id)
+        self.project_id = project_id
+        self.removed: set[str] = set()
+
+    def run(self, arguments, *, timeout_seconds, heartbeat=None, check=True) -> CommandResult:
+        values = list(arguments)
+        self.calls.append((values, check))
+        if heartbeat is not None:
+            heartbeat()
+        if "inspect" in values:
+            name = values[-1]
+            if name in self.removed:
+                return CommandResult(1, "")
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "heimdall.managed": "true",
+                        "heimdall.project-id": self.project_id,
+                        "heimdall.deployment-id": self.managed_deployment_id,
+                    }
+                ),
+            )
+        if values[1:3] in (["rm", "--force"], ["network", "rm"], ["image", "rm"]):
+            self.removed.add(values[-1])
+        return CommandResult(0, "")
+
+
+class UnavailableCleanupRunner(RecordingRunner):
+    def run(self, arguments, *, timeout_seconds, heartbeat=None, check=True) -> CommandResult:
+        values = list(arguments)
+        self.calls.append((values, check))
+        if "inspect" in values:
+            raise CommandExecutionError(-1)
+        return CommandResult(0, "")
+
+
 class RecordingProbe:
     def __init__(self) -> None:
         self.urls: list[str] = []
@@ -220,6 +259,58 @@ def test_candidate_cleanup_targets_only_deterministic_deployment_resources(tmp_p
     assert mutations[2][1:3] == ["network", "rm"]
     assert mutations[3][1:4] == ["image", "rm", "--force"]
     assert all(check is False for _, check in runner.calls)
+
+
+def test_verified_cleanup_removes_only_exact_project_deployment_resources() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    runner = VerifiedCleanupRunner(str(item.project_id), str(item.id))
+
+    DockerRuntime(runner, RecordingProbe()).cleanup_candidate_verified(
+        item,
+        runtime,
+        RecordingProgress(),
+    )
+
+    mutations = [command for command, _ in runner.calls if "inspect" not in command]
+    assert [command[1:3] for command in mutations] == [
+        ["rm", "--force"],
+        ["network", "disconnect"],
+        ["network", "rm"],
+        ["image", "rm"],
+    ]
+
+
+def test_verified_cleanup_does_not_mutate_a_conflicting_resource_name() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    runner = ConflictingResourceRunner()
+
+    with pytest.raises(RuntimeFailure) as raised:
+        DockerRuntime(runner, RecordingProbe()).cleanup_candidate_verified(
+            item,
+            runtime,
+            RecordingProgress(),
+        )
+
+    assert raised.value.code == "CANDIDATE_RESOURCE_NAME_CONFLICT"
+    assert all("inspect" in command for command, _ in runner.calls)
+
+
+def test_verified_cleanup_preserves_resources_when_docker_cannot_be_observed() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    runner = UnavailableCleanupRunner()
+
+    with pytest.raises(RuntimeFailure) as raised:
+        DockerRuntime(runner, RecordingProbe()).cleanup_candidate_verified(
+            item,
+            runtime,
+            RecordingProgress(),
+        )
+
+    assert raised.value.code == "CANDIDATE_RESOURCE_OBSERVATION_FAILED"
+    assert all("inspect" in command for command, _ in runner.calls)
 
 
 def test_existing_candidate_is_observed_only_when_all_exact_resources_are_running() -> None:

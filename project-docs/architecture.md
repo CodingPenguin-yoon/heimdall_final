@@ -98,6 +98,17 @@ claim attempt는 process crash로 만료된 회수도 포함한다. 설정된 �
 generation이면 candidate를 정리해 실패 처리하며, 불확실하면 resource를 보존한 recovery
 failure로 종료한다.
 
+`RECOVERY_STATE_UNCERTAIN` terminal deployment는 runtime reconciliation 대상이다. 기본 보존
+기간 전에는 Docker mutation을 하지 않는다. 기간이 지나면 별도 `runtime_reconciliations` job이
+생기며 deployment Worker가 idle일 때 claim token·lease를 가진 reconciliation Worker가 처리한다.
+API는 job 요청만 저장하며 Docker socket은 계속 Worker만 소유한다.
+
+safe reconciliation은 실제 target이 healthy·active면 runtime metadata와 deployment를
+`SUCCEEDED`로 수렴시키고, 이전 generation이 실제 응답함을 확인하면 target candidate를
+정리한다. 관찰이 불확실하면 `BLOCKED/UNCERTAIN`으로 보존한다. 관리자 force cleanup도 전체
+deployment ID 확인, DB active guard, deterministic name과 managed·project·deployment exact label
+검사를 통과해야 한다.
+
 `deployment_events`는 Worker가 생성한 bounded message와 stable code만 저장한다. child process stderr와 application stdout, environment 원문은 저장하지 않는다.
 
 ## Runtime generation
@@ -115,3 +126,5 @@ failure로 종료한다.
 - NGINX는 generation별 DNS alias를 사용하므로 old·candidate network에 동시에 연결돼도 upstream이 모호하지 않다.
 - 성공 metadata commit 뒤 이전 generation을 정리하고, 실패 시 active metadata와 이전 generation을 보존한다.
 - Docker cleanup 전에 managed label과 deployment ID를 다시 검사하며 이름만 일치하는 외부 resource는 변경하지 않는다.
+- reconciliation cleanup은 삭제 전후 exact label resource를 관찰하며 Docker 명령 실패나 이름
+  충돌을 정리 성공으로 기록하지 않는다.
