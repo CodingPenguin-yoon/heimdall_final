@@ -14,6 +14,7 @@ from heimdall.deployments.models import (
 )
 from heimdall.deployments.worker import (
     DeploymentWorker,
+    RecoveryDisposition,
     RuntimeFailure,
     RuntimeProgress,
 )
@@ -121,10 +122,17 @@ class MemoryJobRepository:
 
 
 class SuccessfulProcessor:
-    def __init__(self) -> None:
+    def __init__(self, recovery: RecoveryDisposition = RecoveryDisposition.SAFE_TO_RETRY) -> None:
         self.cleaned = False
+        self.processed = False
+        self.recovery = recovery
+
+    def recover(self, item: Deployment, progress: RuntimeProgress) -> RecoveryDisposition:
+        progress.heartbeat()
+        return self.recovery
 
     def process(self, item: Deployment, progress: RuntimeProgress) -> None:
+        self.processed = True
         progress.stage(DeploymentStatus.BUILDING, "IMAGES_BUILDING", "Building service images")
         progress.stage(DeploymentStatus.STARTING, "SERVICES_STARTING", "Starting services")
 
@@ -172,6 +180,50 @@ def test_retryable_failure_is_scheduled_with_bounded_attempts() -> None:
     assert processor.cleaned is True
     assert repository.completed == "RETRY"
     assert repository.retry_at is not None
+
+
+def test_recovered_active_deployment_completes_without_rebuilding() -> None:
+    repository = MemoryJobRepository(deployment(), attempts=2)
+    processor = SuccessfulProcessor(RecoveryDisposition.ACTIVE)
+
+    worker(repository, processor).run_once()
+
+    assert repository.completed == "SUCCEEDED"
+    assert processor.processed is False
+    assert processor.cleaned is False
+
+
+def test_uncertain_recovery_retries_without_deleting_candidate() -> None:
+    repository = MemoryJobRepository(deployment(), attempts=2)
+    processor = SuccessfulProcessor(RecoveryDisposition.UNCERTAIN)
+
+    worker(repository, processor).run_once()
+
+    assert repository.completed == "RETRY"
+    assert processor.processed is False
+    assert processor.cleaned is False
+
+
+def test_uncertain_recovery_stops_at_max_attempts_without_deleting_candidate() -> None:
+    repository = MemoryJobRepository(deployment(), attempts=3)
+    processor = SuccessfulProcessor(RecoveryDisposition.UNCERTAIN)
+
+    worker(repository, processor).run_once()
+
+    assert repository.completed == "FAILED:RECOVERY:RECOVERY_STATE_UNCERTAIN"
+    assert processor.processed is False
+    assert processor.cleaned is False
+
+
+def test_expired_claim_over_max_attempts_is_not_executed_again() -> None:
+    repository = MemoryJobRepository(deployment(), attempts=4)
+    processor = SuccessfulProcessor(RecoveryDisposition.SAFE_TO_RETRY)
+
+    worker(repository, processor).run_once()
+
+    assert repository.completed == "FAILED:RECOVERY:WORKER_RECOVERY_EXHAUSTED"
+    assert processor.processed is False
+    assert processor.cleaned is True
 
 
 def test_non_retryable_failure_is_terminal_and_candidate_is_cleaned() -> None:

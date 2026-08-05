@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from heimdall.deployments.models import Deployment, DeploymentSource, DeploymentStatus
+from heimdall.deployments.worker import RecoveryDisposition
 from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.models import RuntimeDeployment
@@ -145,7 +146,23 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
             f"http://127.0.0.1:{runtimes.item.preview_port}/",
             timeout=3,
         ) as response:
+            assert response.headers["X-Heimdall-Deployment-Id"] == str(deployment.id)
             assert response.read() == b"heimdall runtime smoke\n"
+
+        active = runtimes.item
+        runtimes.item = ProjectRuntime(
+            project_id=active.project_id,
+            gateway_container_name=active.gateway_container_name,
+            preview_port=active.preview_port,
+            active_deployment_id=None,
+            active_network_name=None,
+            active_container_names=(),
+            active_image_names=(),
+            updated_at=datetime.now(UTC),
+        )
+
+        assert gateway.recover(deployment, runtime, Progress()) is RecoveryDisposition.ACTIVE
+        assert runtimes.item.active_deployment_id == deployment.id
     finally:
         gateway_name = f"hm-p{project_id.hex[:12]}-gateway"
         runner.run(

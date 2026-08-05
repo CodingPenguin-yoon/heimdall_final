@@ -217,13 +217,22 @@ class DockerRuntime:
             "SERVICES_HEALTH_CHECKING",
             "Waiting for all candidate services to become healthy",
         )
-        for service, item in zip(runtime.services, running, strict=True):
+        candidate = CandidateGeneration(network_name=network, services=tuple(running))
+        self.verify_candidate(runtime, candidate, progress)
+        return candidate
+
+    def verify_candidate(
+        self,
+        runtime: RuntimeDeployment,
+        candidate: CandidateGeneration,
+        progress: RuntimeProgress,
+    ) -> None:
+        for service, item in zip(runtime.services, candidate.services, strict=True):
             self._probe.wait_until_healthy(
                 f"http://127.0.0.1:{item.health_port}{service.health_path}",
                 timeout_seconds=self._health_timeout_seconds,
                 heartbeat=progress.heartbeat,
             )
-        return CandidateGeneration(network_name=network, services=tuple(running))
 
     def cleanup_candidate(self, deployment: Deployment, runtime: RuntimeDeployment) -> None:
         for service in runtime.services:
@@ -238,6 +247,56 @@ class DockerRuntime:
             image = _image_name(deployment, service)
             if self._is_managed("image", image, deployment.id):
                 self._run_ignored(["image", "rm", "--force", image])
+
+    def observe_candidate(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        progress: RuntimeProgress,
+    ) -> CandidateGeneration | None:
+        network = _network_name(deployment)
+        heartbeat = progress.heartbeat
+        if not self._is_managed("network", network, deployment.id, heartbeat=heartbeat):
+            return None
+        services: list[RunningService] = []
+        for service in runtime.services:
+            container = _container_name(deployment, service)
+            image = _image_name(deployment, service)
+            if not self._is_managed("container", container, deployment.id, heartbeat=heartbeat):
+                return None
+            if not self._is_managed("image", image, deployment.id, heartbeat=heartbeat):
+                return None
+            running = self._run_ignored(
+                ["inspect", "--format", "{{json .State.Running}}", container],
+                heartbeat=heartbeat,
+            )
+            if running.returncode != 0:
+                return None
+            try:
+                is_running = json.loads(running.stdout)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            if is_running is not True:
+                return None
+            published = self._run_ignored(
+                ["port", container, f"{service.internal_port}/tcp"],
+                heartbeat=heartbeat,
+            )
+            if published.returncode != 0:
+                return None
+            try:
+                health_port = _published_port(published.stdout)
+            except RuntimeFailure:
+                return None
+            services.append(
+                RunningService(
+                    name=service.name,
+                    container_name=container,
+                    image_name=image,
+                    health_port=health_port,
+                )
+            )
+        return CandidateGeneration(network_name=network, services=tuple(services))
 
     def promote_candidate(self, candidate: CandidateGeneration) -> None:
         for service in candidate.services:
@@ -260,8 +319,15 @@ class DockerRuntime:
             if self._is_managed("image", image_name, deployment_id):
                 self._run_ignored(["image", "rm", "--force", image_name])
 
-    def _is_managed(self, kind: str, name: str, deployment_id: UUID) -> bool:
-        result = self._inspect(kind, name)
+    def _is_managed(
+        self,
+        kind: str,
+        name: str,
+        deployment_id: UUID,
+        *,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> bool:
+        result = self._inspect(kind, name, heartbeat=heartbeat)
         if result.returncode != 0:
             return False
         try:
@@ -289,14 +355,14 @@ class DockerRuntime:
             ]
         )
 
-    def _inspect(self, kind: str, name: str):
+    def _inspect(self, kind: str, name: str, *, heartbeat: Callable[[], None] | None = None):
         if kind == "network":
             arguments = ["network", "inspect", "--format", "{{json .Labels}}", name]
         elif kind == "image":
             arguments = ["image", "inspect", "--format", "{{json .Config.Labels}}", name]
         else:
             arguments = ["inspect", "--format", "{{json .Config.Labels}}", name]
-        return self._run_ignored(arguments)
+        return self._run_ignored(arguments, heartbeat=heartbeat)
 
     def _create_arguments(
         self,
@@ -375,11 +441,12 @@ class DockerRuntime:
             resolved = failure or RuntimeFailure("DOCKER", "DOCKER_COMMAND_FAILED", retryable=True)
             raise resolved from error
 
-    def _run_ignored(self, arguments: list[str]):
+    def _run_ignored(self, arguments: list[str], *, heartbeat: Callable[[], None] | None = None):
         try:
             return self._runner.run(
                 [self._executable, *arguments],
                 timeout_seconds=self._command_timeout_seconds,
+                heartbeat=heartbeat,
                 check=False,
             )
         except CommandExecutionError:

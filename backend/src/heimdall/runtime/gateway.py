@@ -5,14 +5,16 @@ import os
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from http.client import RemoteDisconnected
 from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 from heimdall.deployments.models import Deployment
-from heimdall.deployments.worker import RuntimeFailure, RuntimeProgress
+from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure, RuntimeProgress
 from heimdall.runtime.docker import CandidateGeneration, DockerRuntime
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import CommandExecutionError, CommandResult, CommandRunner
@@ -27,6 +29,20 @@ class RouteProbe(Protocol):
         timeout_seconds: float,
         heartbeat: Callable[[], None],
     ) -> None: ...
+
+    def observe(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        heartbeat: Callable[[], None],
+    ) -> GatewayObservation: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayObservation:
+    reachable: bool
+    deployment_id: UUID | None
 
 
 class HttpRouteProbe:
@@ -52,6 +68,31 @@ class HttpRouteProbe:
                 pass
             time.sleep(0.25)
         raise RuntimeFailure("ACTIVATION", "GATEWAY_ROUTE_PROBE_FAILED")
+
+    def observe(
+        self,
+        url: str,
+        *,
+        timeout_seconds: float,
+        heartbeat: Callable[[], None],
+    ) -> GatewayObservation:
+        heartbeat()
+        try:
+            request = Request(url, method="GET")
+            with urlopen(request, timeout=min(2, timeout_seconds)) as response:
+                marker = response.headers.get("X-Heimdall-Deployment-Id")
+        except HTTPError as error:
+            marker = error.headers.get("X-Heimdall-Deployment-Id")
+            error.close()
+        except (URLError, TimeoutError, RemoteDisconnected, ConnectionError):
+            return GatewayObservation(False, None)
+        if marker is None or marker == "none":
+            return GatewayObservation(True, None)
+        try:
+            deployment_id = UUID(marker)
+        except (ValueError, AttributeError):
+            return GatewayObservation(True, None)
+        return GatewayObservation(True, deployment_id)
 
 
 class NginxGatewayActivator:
@@ -81,6 +122,100 @@ class NginxGatewayActivator:
     def is_active(self, deployment: Deployment) -> bool:
         current = self._repository.get(deployment.project_id)
         return current is not None and current.active_deployment_id == deployment.id
+
+    def recover(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        progress: RuntimeProgress,
+    ) -> RecoveryDisposition:
+        progress.heartbeat()
+        gateway_name = _gateway_name(deployment.project_id.hex)
+        stored = self._repository.get(deployment.project_id)
+        if stored is not None and stored.active_deployment_id == deployment.id:
+            return RecoveryDisposition.ACTIVE
+
+        inspected = self._run_ignored(
+            ["inspect", "--format", "{{json .Config.Labels}}", gateway_name],
+            heartbeat=progress.heartbeat,
+        )
+        if inspected.returncode == -1:
+            return RecoveryDisposition.UNCERTAIN
+        if inspected.returncode != 0:
+            if not self._restore_target_file(deployment, gateway_name, progress, reload=False):
+                return RecoveryDisposition.UNCERTAIN
+            return RecoveryDisposition.SAFE_TO_RETRY
+        if not _is_managed_gateway(inspected.stdout, deployment):
+            return RecoveryDisposition.UNCERTAIN
+
+        port_result = self._run_ignored(
+            ["port", gateway_name, "8080/tcp"], heartbeat=progress.heartbeat
+        )
+        if port_result.returncode != 0:
+            return RecoveryDisposition.UNCERTAIN
+        try:
+            observed_port = _published_port(port_result.stdout)
+            stored = self._repository.ensure_gateway(
+                deployment.project_id, gateway_name, observed_port
+            )
+        except (RuntimeError, RuntimeFailure):
+            return RecoveryDisposition.UNCERTAIN
+        observation = self._probe.observe(
+            f"http://127.0.0.1:{stored.preview_port}/",
+            timeout_seconds=self._route_timeout_seconds,
+            heartbeat=progress.heartbeat,
+        )
+        if not observation.reachable:
+            return RecoveryDisposition.UNCERTAIN
+        if observation.deployment_id == deployment.id:
+            candidate = self._docker.observe_candidate(deployment, runtime, progress)
+            if candidate is None:
+                return (
+                    RecoveryDisposition.SAFE_TO_RETRY
+                    if self._restore_previous_generation(deployment, stored, gateway_name, progress)
+                    else RecoveryDisposition.UNCERTAIN
+                )
+            try:
+                self._docker.verify_candidate(runtime, candidate, progress)
+                for route in runtime.routes:
+                    self._probe.probe(
+                        f"http://127.0.0.1:{stored.preview_port}{route.path}",
+                        timeout_seconds=self._route_timeout_seconds,
+                        heartbeat=progress.heartbeat,
+                    )
+            except RuntimeFailure:
+                return (
+                    RecoveryDisposition.SAFE_TO_RETRY
+                    if self._restore_previous_generation(deployment, stored, gateway_name, progress)
+                    else RecoveryDisposition.UNCERTAIN
+                )
+            previous = self._repository.activate(
+                deployment.project_id,
+                deployment.id,
+                candidate.network_name,
+                tuple(item.container_name for item in candidate.services),
+                tuple(item.image_name for item in candidate.services),
+            )
+            directory = self._gateway_directory(deployment.project_id.hex)
+            _ensure_private_directory(directory)
+            active_config = _nginx_config(deployment, runtime)
+            _atomic_write(directory / "current.conf", active_config)
+            _atomic_write(directory / "last-good.config", active_config)
+            self._docker.promote_candidate(candidate)
+            self._retire_previous(previous, candidate.network_name, gateway_name)
+            return RecoveryDisposition.ACTIVE
+
+        if not _matches_previous_generation(
+            observation,
+            stored,
+            self._gateway_directory(deployment.project_id.hex),
+        ):
+            return RecoveryDisposition.UNCERTAIN
+        return (
+            RecoveryDisposition.SAFE_TO_RETRY
+            if self._restore_previous_generation(deployment, stored, gateway_name, progress)
+            else RecoveryDisposition.UNCERTAIN
+        )
 
     def activate(
         self,
@@ -287,6 +422,64 @@ class NginxGatewayActivator:
     def _gateway_directory(self, project_hex: str) -> Path:
         return self._config_root / project_hex
 
+    def _restore_target_file(
+        self,
+        deployment: Deployment,
+        gateway_name: str,
+        progress: RuntimeProgress,
+        *,
+        reload: bool,
+    ) -> bool:
+        directory = self._gateway_directory(deployment.project_id.hex)
+        current_path = directory / "current.conf"
+        last_good_path = directory / "last-good.config"
+        if not current_path.exists():
+            return True
+        marker = f"# deployment: {deployment.id}"
+        if marker not in current_path.read_text(encoding="utf-8"):
+            return True
+        if not last_good_path.exists():
+            return False
+        _atomic_write(current_path, last_good_path.read_text(encoding="utf-8"))
+        if reload:
+            try:
+                self._reload(gateway_name, progress)
+            except RuntimeFailure:
+                return False
+        return True
+
+    def _restore_previous_generation(
+        self,
+        deployment: Deployment,
+        stored: ProjectRuntime,
+        gateway_name: str,
+        progress: RuntimeProgress,
+    ) -> bool:
+        if not self._restore_target_file(deployment, gateway_name, progress, reload=True):
+            return False
+        observation = self._probe.observe(
+            f"http://127.0.0.1:{stored.preview_port}/",
+            timeout_seconds=self._route_timeout_seconds,
+            heartbeat=progress.heartbeat,
+        )
+        if not observation.reachable or not _matches_previous_generation(
+            observation,
+            stored,
+            self._gateway_directory(deployment.project_id.hex),
+        ):
+            return False
+        self._run_ignored(
+            [
+                "network",
+                "disconnect",
+                "--force",
+                _candidate_network_name(deployment),
+                gateway_name,
+            ],
+            heartbeat=progress.heartbeat,
+        )
+        return True
+
     def _run(
         self,
         arguments: list[str],
@@ -305,11 +498,12 @@ class NginxGatewayActivator:
             )
             raise resolved from error
 
-    def _run_ignored(self, arguments: list[str]):
+    def _run_ignored(self, arguments: list[str], *, heartbeat: Callable[[], None] | None = None):
         try:
             return self._runner.run(
                 [self._docker_executable, *arguments],
                 timeout_seconds=self._command_timeout_seconds,
+                heartbeat=heartbeat,
                 check=False,
             )
         except CommandExecutionError:
@@ -333,6 +527,8 @@ def _nginx_config(deployment: Deployment, runtime: RuntimeDeployment) -> str:
             "server {",
             "    listen 8080;",
             "    server_name _;",
+            "    proxy_hide_header X-Heimdall-Deployment-Id;",
+            f'    add_header X-Heimdall-Deployment-Id "{deployment.id}" always;',
             *locations,
             "}",
             "",
@@ -354,7 +550,10 @@ def _location(location: str, alias: str, port: int) -> str:
 
 
 def _default_config() -> str:
-    return "server { listen 8080; location / { return 503; } }\n"
+    return (
+        'server { listen 8080; add_header X-Heimdall-Deployment-Id "none" always; '
+        "location / { return 503; } }\n"
+    )
 
 
 def _gateway_name(project_hex: str) -> str:
@@ -371,6 +570,34 @@ def _published_port(output: str) -> int:
         if separator and raw_port.isdigit() and 1 <= int(raw_port) <= 65535:
             return int(raw_port)
     raise RuntimeFailure("ACTIVATION", "GATEWAY_PORT_UNAVAILABLE")
+
+
+def _is_managed_gateway(output: str, deployment: Deployment) -> bool:
+    try:
+        labels = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return (
+        isinstance(labels, dict)
+        and labels.get("heimdall.managed") == "true"
+        and labels.get("heimdall.project-id") == str(deployment.project_id)
+        and labels.get("heimdall.kind") == "gateway"
+    )
+
+
+def _matches_previous_generation(
+    observation: GatewayObservation, stored: ProjectRuntime, directory: Path
+) -> bool:
+    if observation.deployment_id == stored.active_deployment_id:
+        return True
+    if observation.deployment_id is not None:
+        return False
+    if stored.active_deployment_id is None:
+        return True
+    last_good_path = directory / "last-good.config"
+    return last_good_path.exists() and (
+        f"# deployment: {stored.active_deployment_id}" in last_good_path.read_text(encoding="utf-8")
+    )
 
 
 def _ensure_private_directory(path: Path) -> None:

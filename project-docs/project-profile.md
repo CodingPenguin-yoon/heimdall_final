@@ -32,6 +32,8 @@
 - 프로젝트별 NGINX 하나가 안정 preview port를 소유한다.
 - 모든 candidate가 정상일 때만 gateway를 전환하고 실패 시 기존 preview를 유지한다.
 - Worker는 PostgreSQL claim token과 lease로 fencing하며 만료된 작업은 새 Worker가 회수한다.
+- 회수 Worker는 DB·NGINX response marker·Docker deployment label을 비교해 실제 active
+  generation을 확정하고, 불확실한 candidate는 삭제하지 않으며 attempt 상한을 적용한다.
 - Docker resource는 project·deployment label과 deterministic generation name을 사용한다.
 - cleanup은 label과 deployment ID가 일치하는 candidate와 이전 generation만 대상으로 한다.
 - project runtime은 active deployment와 host loopback stable preview port를 Control DB에 저장한다.

@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from test_runtime_models import runtime_deployment
 
-from heimdall.deployments.worker import RuntimeFailure
+from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure
 from heimdall.runtime.docker import CandidateGeneration, RunningService
-from heimdall.runtime.gateway import NginxGatewayActivator
+from heimdall.runtime.gateway import GatewayObservation, HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import CommandResult
 from heimdall.runtime.repository import ProjectRuntime
@@ -82,6 +83,40 @@ class GatewayRunner:
         return CommandResult(0, "")
 
 
+class ExistingGatewayRunner(GatewayRunner):
+    def __init__(self, project_id) -> None:
+        super().__init__()
+        self.project_id = project_id
+
+    def run(
+        self,
+        arguments,
+        *,
+        timeout_seconds,
+        heartbeat=None,
+        check=True,
+    ) -> CommandResult:
+        command = list(arguments)
+        if command[1] == "inspect":
+            self.calls.append(command)
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "heimdall.managed": "true",
+                        "heimdall.project-id": str(self.project_id),
+                        "heimdall.kind": "gateway",
+                    }
+                ),
+            )
+        return super().run(
+            command,
+            timeout_seconds=timeout_seconds,
+            heartbeat=heartbeat,
+            check=check,
+        )
+
+
 class ConflictingGatewayRunner(GatewayRunner):
     def run(
         self,
@@ -104,9 +139,19 @@ class ConflictingGatewayRunner(GatewayRunner):
 
 
 class GatewayDocker:
-    def __init__(self) -> None:
+    def __init__(self, observed: CandidateGeneration | None = None) -> None:
         self.promoted: CandidateGeneration | None = None
         self.retired: list[tuple] = []
+        self.observed = observed
+        self.verified: CandidateGeneration | None = None
+
+    def observe_candidate(self, deployment, runtime, progress) -> CandidateGeneration | None:
+        progress.heartbeat()
+        return self.observed
+
+    def verify_candidate(self, runtime, candidate, progress) -> None:
+        self.verified = candidate
+        progress.heartbeat()
 
     def promote_candidate(self, candidate: CandidateGeneration) -> None:
         self.promoted = candidate
@@ -116,17 +161,33 @@ class GatewayDocker:
 
 
 class HealthyRoute:
-    def __init__(self) -> None:
+    def __init__(self, observed_deployment_id=None, *, reachable: bool = True) -> None:
         self.urls: list[str] = []
+        self.observed_deployment_id = observed_deployment_id
+        self.reachable = reachable
 
     def probe(self, url, *, timeout_seconds, heartbeat) -> None:
         self.urls.append(url)
         heartbeat()
 
+    def observe(self, url, *, timeout_seconds, heartbeat) -> GatewayObservation:
+        heartbeat()
+        return GatewayObservation(self.reachable, self.observed_deployment_id)
+
 
 class FailedRoute(HealthyRoute):
     def probe(self, url, *, timeout_seconds, heartbeat) -> None:
         raise RuntimeFailure("ACTIVATION", "GATEWAY_ROUTE_PROBE_FAILED")
+
+
+class SequencedRoute(HealthyRoute):
+    def __init__(self, observations) -> None:
+        super().__init__()
+        self.observations = list(observations)
+
+    def observe(self, url, *, timeout_seconds, heartbeat) -> GatewayObservation:
+        heartbeat()
+        return GatewayObservation(True, self.observations.pop(0))
 
 
 class Progress:
@@ -151,6 +212,30 @@ def candidate() -> CandidateGeneration:
     )
 
 
+def test_route_observer_reads_the_nginx_deployment_marker(monkeypatch) -> None:
+    deployment_id = uuid4()
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers = {"X-Heimdall-Deployment-Id": str(deployment_id)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    monkeypatch.setattr("heimdall.runtime.gateway.urlopen", lambda request, timeout: Response())
+
+    observation = HttpRouteProbe().observe(
+        "http://127.0.0.1:48080/",
+        timeout_seconds=1,
+        heartbeat=lambda: None,
+    )
+
+    assert observation == GatewayObservation(True, deployment_id)
+
+
 def test_gateway_activates_candidate_and_persists_stable_preview(tmp_path: Path) -> None:
     item = runtime_deployment()
     runtime = RuntimeDeployment.from_deployment(item)
@@ -170,6 +255,7 @@ def test_gateway_activates_candidate_and_persists_stable_preview(tmp_path: Path)
     config = (tmp_path / "gateways" / item.project_id.hex / "current.conf").read_text()
     assert f"api-g-{item.id.hex[:12]}" in config
     assert f"# deployment: {item.id}" in config
+    assert f'add_header X-Heimdall-Deployment-Id "{item.id}" always;' in config
 
 
 def test_failed_route_probe_restores_last_known_good_config(tmp_path: Path) -> None:
@@ -190,7 +276,8 @@ def test_failed_route_probe_restores_last_known_good_config(tmp_path: Path) -> N
     assert repository.item.active_deployment_id is None
     assert docker.promoted is None
     config = (tmp_path / "gateways" / item.project_id.hex / "current.conf").read_text()
-    assert config == "server { listen 8080; location / { return 503; } }\n"
+    assert 'add_header X-Heimdall-Deployment-Id "none" always;' in config
+    assert "return 503" in config
     gateway_name = f"hm-p{item.project_id.hex[:12]}-gateway"
     reloads = [call for call in runner.calls if call[1:3] == ["exec", gateway_name]]
     assert len(reloads) == 2
@@ -216,3 +303,150 @@ def test_unmanaged_gateway_name_collision_is_rejected(tmp_path: Path) -> None:
     assert raised.value.code == "GATEWAY_NAME_CONFLICT"
     assert repository.item is None
     assert docker.promoted is None
+
+
+def test_recovery_finalizes_the_generation_served_by_nginx(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    previous_id = uuid4()
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=f"hm-p{item.project_id.hex[:12]}-gateway",
+        preview_port=48080,
+        active_deployment_id=previous_id,
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    directory = tmp_path / "gateways" / item.project_id.hex
+    directory.mkdir(parents=True)
+    current = f"# deployment: {item.id}\nserver {{ listen 8080; }}\n"
+    (directory / "current.conf").write_text(current)
+    (directory / "last-good.config").write_text(
+        f"# deployment: {previous_id}\nserver {{ listen 8080; }}\n"
+    )
+    observed_candidate = candidate()
+    docker = GatewayDocker(observed_candidate)
+    runner = ExistingGatewayRunner(item.project_id)
+    route = HealthyRoute(item.id)
+    activator = NginxGatewayActivator(repository, docker, runner, route, tmp_path / "gateways")
+
+    disposition = activator.recover(item, runtime, Progress())
+
+    assert disposition is RecoveryDisposition.ACTIVE
+    assert repository.item is not None
+    assert repository.item.active_deployment_id == item.id
+    assert docker.promoted == observed_candidate
+    assert docker.verified == observed_candidate
+    assert docker.retired == [
+        (
+            "previous-network",
+            ("previous-container",),
+            ("previous-image",),
+            previous_id,
+        )
+    ]
+
+
+def test_recovery_restores_target_file_when_nginx_still_serves_previous(
+    tmp_path: Path,
+) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    previous_id = uuid4()
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=f"hm-p{item.project_id.hex[:12]}-gateway",
+        preview_port=48080,
+        active_deployment_id=previous_id,
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    directory = tmp_path / "gateways" / item.project_id.hex
+    directory.mkdir(parents=True)
+    (directory / "current.conf").write_text(f"# deployment: {item.id}\nserver {{ listen 8080; }}\n")
+    previous_config = f"# deployment: {previous_id}\nserver {{ listen 8080; }}\n"
+    (directory / "last-good.config").write_text(previous_config)
+    runner = ExistingGatewayRunner(item.project_id)
+    activator = NginxGatewayActivator(
+        repository,
+        GatewayDocker(),
+        runner,
+        HealthyRoute(previous_id),
+        tmp_path / "gateways",
+    )
+
+    disposition = activator.recover(item, runtime, Progress())
+
+    assert disposition is RecoveryDisposition.SAFE_TO_RETRY
+    assert (directory / "current.conf").read_text() == previous_config
+    assert repository.item is not None
+    assert any(
+        call[1:3] == ["exec", repository.item.gateway_container_name] for call in runner.calls
+    )
+
+
+def test_recovery_preserves_candidate_when_gateway_cannot_be_observed(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=f"hm-p{item.project_id.hex[:12]}-gateway",
+        preview_port=48080,
+        active_deployment_id=None,
+        active_network_name=None,
+        active_container_names=(),
+        active_image_names=(),
+        updated_at=datetime.now(UTC),
+    )
+    activator = NginxGatewayActivator(
+        repository,
+        GatewayDocker(candidate()),
+        ExistingGatewayRunner(item.project_id),
+        HealthyRoute(reachable=False),
+        tmp_path / "gateways",
+    )
+
+    disposition = activator.recover(item, runtime, Progress())
+
+    assert disposition is RecoveryDisposition.UNCERTAIN
+
+
+def test_recovery_rolls_back_when_served_target_candidate_is_incomplete(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    previous_id = uuid4()
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=f"hm-p{item.project_id.hex[:12]}-gateway",
+        preview_port=48080,
+        active_deployment_id=previous_id,
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    directory = tmp_path / "gateways" / item.project_id.hex
+    directory.mkdir(parents=True)
+    (directory / "current.conf").write_text(f"# deployment: {item.id}\nserver {{ listen 8080; }}\n")
+    previous_config = f"# deployment: {previous_id}\nserver {{ listen 8080; }}\n"
+    (directory / "last-good.config").write_text(previous_config)
+    activator = NginxGatewayActivator(
+        repository,
+        GatewayDocker(observed=None),
+        ExistingGatewayRunner(item.project_id),
+        SequencedRoute([item.id, previous_id]),
+        tmp_path / "gateways",
+    )
+
+    disposition = activator.recover(item, runtime, Progress())
+
+    assert disposition is RecoveryDisposition.SAFE_TO_RETRY
+    assert (directory / "current.conf").read_text() == previous_config

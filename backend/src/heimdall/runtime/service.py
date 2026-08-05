@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol
 
 from heimdall.deployments.models import Deployment, DeploymentStatus
-from heimdall.deployments.worker import RuntimeFailure, RuntimeProgress
+from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure, RuntimeProgress
 from heimdall.git.client import GitAccessError, GitClient
 from heimdall.projects.service import ProjectService
 from heimdall.runtime.docker import CandidateGeneration, DockerRuntime
@@ -15,6 +15,13 @@ from heimdall.secrets.store import SecretStore
 
 
 class RuntimeActivator(Protocol):
+    def recover(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        progress: RuntimeProgress,
+    ) -> RecoveryDisposition: ...
+
     def is_active(self, deployment: Deployment) -> bool: ...
 
     def activate(
@@ -44,6 +51,13 @@ class DockerDeploymentProcessor:
         self._activator = activator
         self._secret_store = secret_store
         self._workspace_root = workspace_root.resolve()
+
+    def recover(self, deployment: Deployment, progress: RuntimeProgress) -> RecoveryDisposition:
+        try:
+            runtime = RuntimeDeployment.from_deployment(deployment)
+        except RuntimeConfigurationError:
+            return RecoveryDisposition.UNCERTAIN
+        return self._activator.recover(deployment, runtime, progress)
 
     def process(self, deployment: Deployment, progress: RuntimeProgress) -> None:
         try:

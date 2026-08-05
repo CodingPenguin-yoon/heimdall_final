@@ -37,6 +37,8 @@ class RecordingRunner:
         if "inspect" in values:
             if self.managed_deployment_id is None:
                 return CommandResult(1, "")
+            if "{{json .State.Running}}" in values:
+                return CommandResult(0, "true")
             return CommandResult(
                 0,
                 json.dumps(
@@ -218,6 +220,32 @@ def test_candidate_cleanup_targets_only_deterministic_deployment_resources(tmp_p
     assert mutations[2][1:3] == ["network", "rm"]
     assert mutations[3][1:4] == ["image", "rm", "--force"]
     assert all(check is False for _, check in runner.calls)
+
+
+def test_existing_candidate_is_observed_only_when_all_exact_resources_are_running() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    runner = RecordingRunner(str(item.id))
+
+    observed = DockerRuntime(runner, RecordingProbe()).observe_candidate(
+        item, runtime, RecordingProgress()
+    )
+
+    assert observed is not None
+    assert observed.network_name == f"hm-p{item.project_id.hex[:12]}-g{item.id.hex[:12]}"
+    assert observed.services[0].container_name.endswith(f"-g{item.id.hex[:12]}")
+    assert observed.services[0].health_port == 49152
+
+
+def test_incomplete_candidate_is_not_treated_as_recoverable() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+
+    observed = DockerRuntime(RecordingRunner(), RecordingProbe()).observe_candidate(
+        item, runtime, RecordingProgress()
+    )
+
+    assert observed is None
 
 
 def test_health_probe_retries_when_service_closes_connection_during_startup(monkeypatch) -> None:

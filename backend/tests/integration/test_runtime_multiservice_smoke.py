@@ -130,7 +130,9 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
         docker = DockerRuntime(
             runner,
             HttpHealthProbe(interval_seconds=0.1),
-            managed_database_container="heimdall-managed-postgres",
+            managed_database_container=os.environ.get(
+                "HEIMDALL_TEST_MANAGED_DB_CONTAINER", "heimdall-managed-postgres"
+            ),
             command_timeout_seconds=120,
             health_timeout_seconds=20,
         )

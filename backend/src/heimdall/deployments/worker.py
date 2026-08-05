@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Protocol
 
 from heimdall.deployments.models import (
@@ -18,9 +19,18 @@ class RuntimeFailure(RuntimeError):
     stage: str
     code: str
     retryable: bool = False
+    cleanup_candidate: bool = True
+
+
+class RecoveryDisposition(StrEnum):
+    ACTIVE = "ACTIVE"
+    SAFE_TO_RETRY = "SAFE_TO_RETRY"
+    UNCERTAIN = "UNCERTAIN"
 
 
 class RuntimeProcessor(Protocol):
+    def recover(self, deployment: Deployment, progress: RuntimeProgress) -> RecoveryDisposition: ...
+
     def process(self, deployment: Deployment, progress: RuntimeProgress) -> None: ...
 
     def cleanup_candidate(self, deployment: Deployment) -> None: ...
@@ -80,6 +90,29 @@ class DeploymentWorker:
             return False
         progress = RuntimeProgress(self._repository, claim, self._lease_duration)
         try:
+            if claim.attempts > 1:
+                recovery = self._processor.recover(claim.deployment, progress)
+                if recovery is RecoveryDisposition.ACTIVE:
+                    progress.heartbeat()
+                    self._repository.succeed(claim)
+                    return True
+                if recovery is RecoveryDisposition.UNCERTAIN:
+                    self._handle_failure(
+                        claim,
+                        RuntimeFailure(
+                            "RECOVERY",
+                            "RECOVERY_STATE_UNCERTAIN",
+                            retryable=True,
+                            cleanup_candidate=False,
+                        ),
+                    )
+                    return True
+                if claim.attempts > self._max_attempts:
+                    self._handle_failure(
+                        claim,
+                        RuntimeFailure("RECOVERY", "WORKER_RECOVERY_EXHAUSTED"),
+                    )
+                    return True
             self._processor.process(claim.deployment, progress)
             progress.heartbeat()
             self._repository.succeed(claim)
@@ -95,12 +128,13 @@ class DeploymentWorker:
         return True
 
     def _handle_failure(self, claim: DeploymentJobClaim, failure: RuntimeFailure) -> None:
-        try:
-            self._processor.cleanup_candidate(claim.deployment)
-        except DeploymentClaimLostError:
-            return
-        except Exception:
-            failure = RuntimeFailure("CLEANUP", "CANDIDATE_CLEANUP_FAILED", retryable=True)
+        if failure.cleanup_candidate:
+            try:
+                self._processor.cleanup_candidate(claim.deployment)
+            except DeploymentClaimLostError:
+                return
+            except Exception:
+                failure = RuntimeFailure("CLEANUP", "CANDIDATE_CLEANUP_FAILED", retryable=True)
         try:
             if failure.retryable and claim.attempts < self._max_attempts:
                 delay = self._retry_base_delay * (2 ** (claim.attempts - 1))
