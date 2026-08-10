@@ -23,7 +23,7 @@ from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.schemas import ProjectCreate, ProjectSettingsUpdate
 from heimdall.projects.service import ProjectService
-from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
+from heimdall.runtime.docker import DockerRuntime, DockerServiceLogReader, HttpHealthProbe
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
@@ -169,6 +169,16 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
             assert response.read() == b"web service\n"
         with urlopen(f"http://127.0.0.1:{runtime.preview_port}/api", timeout=3) as response:
             assert response.read() == b"api service\n"
+
+        service_logs = DockerServiceLogReader(
+            runner,
+            secret_store,
+            command_timeout_seconds=30,
+        ).read(completed, "api")
+        service_log_text = "\n".join(line.message for line in service_logs.lines)
+        assert "[REDACTED]" in service_log_text
+        assert "runtime-user-secret-canary" not in service_log_text
+        assert {line.stream.value for line in service_logs.lines} == {"STDOUT", "STDERR"}
 
         api_container = next(name for name in runtime.active_container_names if "-api-" in name)
         inspection = runner.run(["docker", "inspect", api_container], timeout_seconds=30)

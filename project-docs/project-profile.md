@@ -45,7 +45,9 @@
 - project runtime은 active deployment와 host loopback stable preview port를 Control DB에 저장한다.
 - 전역 배포 활동은 기존 Deployment 공개 필드로 최근 100건을 최신순 조회하고, project 이름은 기존
   project 목록과 UI에서 결합한다. 진행 중 배포가 있을 때만 목록을 자동 갱신한다.
-- API와 UI는 application stdout 원문 대신 raw secret이 없는 구조화 deployment event를 제공한다.
+- 구조화 deployment event는 raw application output 없이 Control DB에 저장한다. 별도 서비스 로그
+  snapshot은 Worker가 exact container label을 확인하고 알려진 secret을 fail-closed 마스킹한 뒤 최근
+  200줄만 메모리 응답으로 제공하며 저장하거나 자동 streaming하지 않는다.
 - service별 사용자 환경변수와 project database 접근 여부를 설정한다.
 - 사용자 환경변수와 Heimdall 예약 `DATABASE_*`, `HEIMDALL_*` 값을 배포 시 합성한다.
 - project database password와 사용자 secret은 Heimdall이 관리하며 API·Control DB·deployment snapshot에 raw 값을 남기지 않는다.

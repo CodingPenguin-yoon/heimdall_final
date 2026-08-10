@@ -1,15 +1,26 @@
-import { useQuery } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
-import { deploymentEventsQuery, deploymentQuery } from '@/entities/deployment/queries';
+import {
+  deploymentEventsQuery,
+  deploymentKeys,
+  deploymentQuery,
+  deploymentServiceLogsQuery,
+} from '@/entities/deployment/queries';
 import {
   deploymentStatusLabels as statusLabels,
   deploymentStatusTone,
   isDeploymentTerminal,
 } from '@/entities/deployment/presentation';
-import type { Deployment, DeploymentEvent, DeploymentStatus } from '@/entities/deployment/types';
+import type {
+  Deployment,
+  DeploymentEvent,
+  DeploymentStatus,
+  ServiceLogSnapshot,
+} from '@/entities/deployment/types';
 import { RuntimeReconciliationPanel } from '@/features/reconcile-runtime/RuntimeReconciliationPanel';
+import { ApiError } from '@/shared/api/client';
 import { formatDate, shortSha } from '@/shared/lib/format';
 import { Icon } from '@/shared/ui/Icon';
 
@@ -152,6 +163,121 @@ function DeploymentEventLog({
                 <span>{eventStageLabels[event.stage] ?? event.stage.replaceAll('_', ' ')}</span>
                 <code>{event.code}</code>
                 <p>{event.message}</p>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+const serviceLogErrors: Record<string, string> = {
+  SERVICE_LOGS_UNAVAILABLE:
+    '이 generation의 컨테이너가 아직 생성되지 않았거나 이미 정리되어 로그를 볼 수 없습니다.',
+  RUNTIME_LOG_BROKER_UNAVAILABLE:
+    'Worker 로그 조회 연결을 사용할 수 없습니다. Worker 실행 상태를 확인해주세요.',
+  SERVICE_LOG_REDACTION_UNAVAILABLE:
+    '민감정보 마스킹을 준비하지 못해 로그 원문을 표시하지 않았습니다.',
+  SERVICE_LOG_SERVICE_NOT_FOUND: '배포 snapshot에 포함된 서비스를 다시 선택해주세요.',
+};
+
+function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
+  const [serviceName, setServiceName] = useState<string>();
+  const queryClient = useQueryClient();
+  const logs = useQuery(deploymentServiceLogsQuery(deploymentId, serviceName));
+  const snapshot = logs.data;
+  const rootSnapshot = queryClient.getQueryData<ServiceLogSnapshot>(
+    deploymentKeys.serviceLogs(deploymentId),
+  );
+  const services = snapshot?.services ?? rootSnapshot?.services ?? [];
+
+  const selectedService = serviceName ?? snapshot?.serviceName ?? services[0] ?? '';
+  const errorCode = logs.error instanceof ApiError ? logs.error.code : 'REQUEST_FAILED';
+  const errorMessage = serviceLogErrors[errorCode] ?? '서비스 로그를 불러오지 못했습니다.';
+
+  return (
+    <section className="panel service-log-panel">
+      <div className="panel-heading service-log-heading">
+        <div>
+          <span className="eyebrow">Application output</span>
+          <h2>서비스 로그</h2>
+          <p>선택한 컨테이너의 stdout·stderr 최근 200줄을 조회 시점 기준으로 보여줍니다.</p>
+        </div>
+        <div className="service-log-controls">
+          <label>
+            <span>Service</span>
+            <select
+              aria-label="로그 서비스 선택"
+              value={selectedService}
+              disabled={services.length === 0}
+              onChange={(event) => setServiceName(event.target.value)}
+            >
+              {services.length === 0 ? <option value="">서비스 확인 중</option> : null}
+              {services.map((service) => (
+                <option key={service} value={service}>
+                  {service}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="button secondary service-log-refresh"
+            disabled={logs.isFetching}
+            onClick={() => void logs.refetch()}
+          >
+            <Icon name="refresh" /> {logs.isFetching ? '조회 중' : '새로고침'}
+          </button>
+        </div>
+      </div>
+
+      <div className="service-log-notice" role="note">
+        <Icon name="shield" />
+        <p>
+          Heimdall이 아는 secret은 마스킹하지만 애플리케이션 로그에는 알 수 없는 개인정보나 인증
+          정보가 포함될 수 있습니다. 이 snapshot은 저장하지 않습니다.
+        </p>
+      </div>
+
+      {snapshot && !logs.isError ? (
+        <div className="service-log-meta">
+          <span>
+            <strong>{snapshot.serviceName}</strong> · {snapshot.lines.length} lines
+            {snapshot.truncated ? ' · 일부 생략됨' : ''}
+          </span>
+          <time dateTime={snapshot.retrievedAt}>조회 {formatDate(snapshot.retrievedAt)}</time>
+        </div>
+      ) : null}
+
+      <div
+        className="service-log-output"
+        role="log"
+        aria-label="서비스 컨테이너 로그"
+        aria-live="polite"
+        aria-busy={logs.isFetching}
+      >
+        {logs.isLoading ? (
+          <p className="service-log-empty">서비스 로그를 조회하는 중입니다.</p>
+        ) : null}
+        {logs.isError ? (
+          <div className="service-log-empty service-log-error">
+            <strong>{errorMessage}</strong>
+            <small>{errorCode}</small>
+          </div>
+        ) : null}
+        {snapshot && snapshot.lines.length === 0 && !logs.isError ? (
+          <p className="service-log-empty">아직 출력된 서비스 로그가 없습니다.</p>
+        ) : null}
+        {snapshot && snapshot.lines.length > 0 && !logs.isError ? (
+          <ol>
+            {snapshot.lines.map((line, index) => (
+              <li key={`${line.timestamp}-${line.stream}-${index}`}>
+                <time dateTime={line.timestamp}>{formatEventTime(line.timestamp)}</time>
+                <span className={`service-log-stream ${line.stream.toLowerCase()}`}>
+                  {line.stream}
+                </span>
+                <pre>{line.message}</pre>
               </li>
             ))}
           </ol>
@@ -315,6 +441,8 @@ export function DeploymentDetailPage() {
         loading={events.isLoading}
         error={events.isError}
       />
+
+      <ServiceLogPanel deploymentId={item.id} />
 
       <DeploymentResult deployment={item} />
 

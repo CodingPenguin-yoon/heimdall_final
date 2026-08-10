@@ -5,6 +5,7 @@ import type {
   DeploymentEvent,
   RuntimeReconciliation,
   RuntimeReconciliationAction,
+  ServiceLogSnapshot,
 } from './types';
 
 export function listDeployments(projectId: string): Promise<{ items: Deployment[] }> {
@@ -31,6 +32,14 @@ export function createDeployment(
 
 export function listDeploymentEvents(deploymentId: string): Promise<{ items: DeploymentEvent[] }> {
   return requestJson(`/deployments/${deploymentId}/events`);
+}
+
+export function getServiceLogs(
+  deploymentId: string,
+  serviceName?: string,
+): Promise<ServiceLogSnapshot> {
+  const query = serviceName ? `?service=${encodeURIComponent(serviceName)}` : '';
+  return requestJson(`/deployments/${deploymentId}/service-logs${query}`);
 }
 
 export function getRuntimeReconciliation(deploymentId: string): Promise<RuntimeReconciliation> {

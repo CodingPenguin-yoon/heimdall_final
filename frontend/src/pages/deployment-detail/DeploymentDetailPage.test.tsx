@@ -1,15 +1,18 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getDeployment, listDeploymentEvents } from '@/entities/deployment/api';
-import type { Deployment, DeploymentEvent } from '@/entities/deployment/types';
+import { getDeployment, getServiceLogs, listDeploymentEvents } from '@/entities/deployment/api';
+import type { Deployment, DeploymentEvent, ServiceLogSnapshot } from '@/entities/deployment/types';
+import { ApiError } from '@/shared/api/client';
 
 import { DeploymentDetailPage } from './DeploymentDetailPage';
 
 vi.mock('@/entities/deployment/api', () => ({
   getDeployment: vi.fn(),
+  getServiceLogs: vi.fn(),
   listDeploymentEvents: vi.fn(),
 }));
 
@@ -47,6 +50,27 @@ const events: DeploymentEvent[] = [
   },
 ];
 
+const longLogLine = `request completed ${'x'.repeat(500)}`;
+const serviceLogs: ServiceLogSnapshot = {
+  deploymentId: deployment.id,
+  services: ['web', 'api'],
+  serviceName: 'web',
+  retrievedAt: '2026-08-06T03:01:30Z',
+  lines: [
+    {
+      timestamp: '2026-08-06T03:01:20.000000000Z',
+      stream: 'STDOUT',
+      message: longLogLine,
+    },
+    {
+      timestamp: '2026-08-06T03:01:21.000000000Z',
+      stream: 'STDERR',
+      message: 'upstream retry',
+    },
+  ],
+  truncated: false,
+};
+
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -64,6 +88,7 @@ describe('DeploymentDetailPage', () => {
   beforeEach(() => {
     vi.mocked(getDeployment).mockResolvedValue(deployment);
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: events });
+    vi.mocked(getServiceLogs).mockResolvedValue(serviceLogs);
   });
 
   afterEach(() => {
@@ -116,5 +141,59 @@ describe('DeploymentDetailPage', () => {
     expect(screen.getByText('HEALTH')).toBeInTheDocument();
     expect(screen.getByText('SERVICE_HEALTH_CHECK_FAILED')).toBeInTheDocument();
     expect(screen.getByText('서비스 상태 확인').closest('li')).toHaveClass('failed');
+  });
+
+  it('shows a manually refreshed service log snapshot with stream separation', async () => {
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: '서비스 로그' })).toBeInTheDocument();
+    const log = await screen.findByRole('log', { name: '서비스 컨테이너 로그' });
+    expect(within(log).getByText('STDOUT')).toBeInTheDocument();
+    expect(within(log).getByText('STDERR')).toBeInTheDocument();
+    expect(within(log).getByText(longLogLine)).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent('이 snapshot은 저장하지 않습니다');
+    expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, undefined);
+  });
+
+  it('switches services and refreshes only when the operator requests it', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getServiceLogs).mockImplementation(async (_, serviceName) =>
+      serviceName === 'api'
+        ? {
+            ...serviceLogs,
+            serviceName: 'api',
+            lines: [
+              {
+                timestamp: '2026-08-06T03:02:00.000000000Z',
+                stream: 'STDOUT',
+                message: 'api ready',
+              },
+            ],
+          }
+        : serviceLogs,
+    );
+    renderPage();
+
+    await screen.findByRole('option', { name: 'api' });
+    const selector = screen.getByRole('combobox', { name: '로그 서비스 선택' });
+    await user.selectOptions(selector, 'api');
+
+    expect(await screen.findByText('api ready')).toBeInTheDocument();
+    expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, 'api');
+
+    await user.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(getServiceLogs).toHaveBeenCalledTimes(3));
+  });
+
+  it('explains when logs are withheld because redaction is unavailable', async () => {
+    vi.mocked(getServiceLogs).mockRejectedValue(
+      new ApiError(503, 'SERVICE_LOG_REDACTION_UNAVAILABLE', 'Service logs were withheld'),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText('민감정보 마스킹을 준비하지 못해 로그 원문을 표시하지 않았습니다.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('SERVICE_LOG_REDACTION_UNAVAILABLE')).toBeInTheDocument();
   });
 });

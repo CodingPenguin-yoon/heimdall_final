@@ -19,6 +19,7 @@ Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 �
 - 실패 시 last-known-good preview 보존과 candidate label cleanup
 - 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
 - 배포 event polling, 실패 단계와 안정 preview link
+- Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot과 secret 마스킹
 - 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
 - 밝은 화이트톤 관리 UI
 
@@ -54,6 +55,9 @@ cd backend
 ```
 
 Worker만 Docker socket을 사용한다. API process와 배포 project container에는 Docker socket을 전달하지 않는다.
+서비스 로그 조회도 API가 Docker를 직접 호출하지 않고 같은 `HEIMDALL_RUNTIME_ROOT`의 owner-only
+`logs.sock`을 통해 Worker에 요청한다. API와 Worker를 함께 실행해야 하며 Worker가 없으면 조회만
+stable `503 RUNTIME_LOG_BROKER_UNAVAILABLE`로 실패하고 배포 처리 상태는 바뀌지 않는다.
 
 ## Frontend
 
@@ -131,6 +135,14 @@ QUEUED
 ```
 
 build, start, health 또는 activation이 실패하면 candidate resource만 정리하고 기존 active generation과 Managed PostgreSQL data는 유지한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한 resource만 대상으로 한다.
+
+`GET /api/deployments/{deploymentId}/service-logs?service={serviceName}`은 immutable snapshot의
+service만 선택하고 deterministic container 이름과 managed·project·deployment label을 모두 확인한
+뒤 최근 200줄을 조회한다. stdout과 stderr는 Docker timestamp 순으로 반환하고, Heimdall이 관리하는
+project secret과 database password는 Worker에서 `[REDACTED]`로 바뀐 뒤에만 socket을 통과한다.
+redaction 값을 준비하지 못하면 원문을 반환하지 않으며, 응답은 메모리에서만 처리하고 저장하지 않는다.
+line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
+`503 SERVICE_LOG_REDACTION_UNAVAILABLE`로 fail closed 한다.
 
 다음 배포에서 project gateway가 정지 상태면 Worker는 managed·project·gateway label과 실제
 running 상태를 함께 확인한다. exact managed gateway만 저장된 Preview 포트와 기존 active

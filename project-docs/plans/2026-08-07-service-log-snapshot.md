@@ -1,10 +1,11 @@
 # 서비스 로그 Snapshot Plan
 
-- 상태: `DRAFT`
+- 상태: `COMPLETED`
 - 날짜: `2026-08-07`
+- 승인: `2026-08-10` 사용자가 현재 변경을 별도 브랜치에 checkpoint한 뒤 이 방향으로 진행하도록 승인
 - 초기 방향: 사용자가 구조화 deployment event 다음 단계로 서비스별 최근 컨테이너 로그 200줄을
   먼저 제공하고 실시간 streaming은 후속 단계로 분리하는 방향에 동의함
-- 승인 필요: Worker 매개 Unix socket과 application log의 잔여 민감정보 위험을 포함한 아래 보안 계약
+- 승인 내용: Worker 매개 Unix socket과 application log의 잔여 민감정보 위험을 포함한 아래 보안 계약
 
 ## 현재 동작과 문제
 
@@ -146,6 +147,10 @@ application이 secret을 encoding·hashing·분할한 값이나 Heimdall이 모�
 
 안전한 중단 지점: Worker 내부 read-only reader와 테스트만 존재하며 API에는 노출되지 않는다.
 
+- 구현 증거 (`2026-08-10`): stdout·stderr 분리 capture, exact 3-label inspect, fixed tail 200,
+  16KiB line 제한, timestamp merge와 project/database secret fail-closed redaction을 구현했다.
+- 검증: reader·기존 Docker/NGINX 관련 targeted test 통과.
+
 ### 2. Worker local broker와 API 계약
 
 - Worker startup·shutdown에 owner-only Unix socket server lifecycle을 연결한다.
@@ -156,6 +161,11 @@ application이 secret을 encoding·hashing·분할한 값이나 Heimdall이 모�
 안전한 중단 지점: endpoint를 Frontend에서 사용하지 않아 기존 UI는 그대로 동작한다. rollback은
 broker와 endpoint wiring 제거만 필요하며 DB migration은 없다.
 
+- 구현 증거 (`2026-08-10`): owner-only `logs.sock`, versioned bounded JSON protocol, 최대 동시 처리
+  4개, 256KiB 응답 제한과 API stable error mapping을 구현했다. unsafe/active socket은 덮어쓰지 않고
+  broker startup 실패 시 deployment loop를 계속한다.
+- 검증: broker lifecycle·timeout·동시성 및 deployment service/router 계약 targeted test 통과.
+
 ### 3. 배포 상세 service log snapshot UI
 
 - 구조화 deployment event와 별도인 `서비스 로그` 영역을 추가한다.
@@ -164,6 +174,10 @@ broker와 endpoint wiring 제거만 필요하며 DB migration은 없다.
 - application log의 잔여 민감정보 위험과 비영속 범위를 화면에 표시한다.
 - Testing Library로 service 선택, 긴 line, empty/error와 새로고침을 검증한다.
 
+- 구현 증거 (`2026-08-10`): 배포 상세에 service selector, stdout/stderr 구분, 조회 시각, 수동
+  새로고침, empty·unavailable·redaction error와 비영속·잔여 민감정보 경고를 추가했다.
+- 검증: 상세 화면 테스트 6개와 TypeScript production build 통과.
+
 ### 4. 집계 gate와 실제 smoke
 
 - Backend Ruff format·lint·pytest와 Frontend `pnpm verify`를 실행한다.
@@ -171,6 +185,12 @@ broker와 endpoint wiring 제거만 필요하며 DB migration은 없다.
 - API 응답이 tail·순서·stream·상한을 지키고 canary를 포함하지 않는지 확인한다.
 - container와 socket은 exact test target만 정리하며 기존 deployment resource를 변경하지 않는다.
 - 실제 배포 상세에서 service 선택과 수동 새로고침을 확인한다.
+
+- 완료 검증 (`2026-08-10`): Backend Ruff format·lint 통과, pytest `100 passed, 9 skipped`,
+  Frontend `pnpm verify`에서 `18 passed`와 production build 통과, Chromium E2E `3 passed`.
+- 실제 Docker smoke: test-owned container가 stdout·stderr에 출력한 known secret을 모두
+  `[REDACTED]`로 응답하고 raw canary를 포함하지 않았으며, 종료 뒤 container·network·image가
+  남지 않음을 확인했다 (`1 passed`).
 
 ## 인수 조건
 
@@ -199,10 +219,10 @@ broker와 endpoint wiring 제거만 필요하며 DB migration은 없다.
 - `project-docs/project-profile.md`: 구조화 event 외 bounded application log snapshot 예외와 잔여 위험
 - `README.md`: Worker socket, API·Worker 동시 실행 요구와 서비스 로그 범위
 
-## 남은 결정
+## 완료된 결정과 후속
 
-- 승인 요청: API에 Docker socket을 주지 않고 Worker local Unix socket broker를 추가한다.
-- 승인 요청: known Heimdall secret은 fail-closed exact redaction하되 application이 출력하는 알 수 없는
-  개인정보·credential까지 완전 탐지할 수 없다는 잔여 위험을 단일 관리자가 수용한다.
+- 승인 완료: API에 Docker socket을 주지 않고 Worker local Unix socket broker를 추가했다.
+- 승인 완료: known Heimdall secret은 fail-closed exact redaction하되 application이 출력하는 알 수 없는
+  개인정보·credential까지 완전 탐지할 수 없다는 잔여 위험을 단일 관리자 전제에서 수용했다.
 - 후속 후보: live follow는 snapshot 기능의 resource·보안 동작을 확인한 뒤 SSE 또는 WebSocket 중
   하나를 별도 Plan으로 결정한다.

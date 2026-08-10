@@ -13,6 +13,7 @@ from heimdall.deployments.models import (
     DeploymentSource,
     DeploymentStatus,
 )
+from heimdall.runtime.logs import ServiceLogSnapshot, ServiceLogStream
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -94,3 +95,36 @@ class DeploymentEventRead(ApiModel):
 
 class DeploymentEventList(ApiModel):
     items: list[DeploymentEventRead]
+
+
+class ServiceLogLineRead(ApiModel):
+    timestamp: str
+    stream: ServiceLogStream
+    message: str
+
+
+class ServiceLogRead(ApiModel):
+    deployment_id: UUID
+    services: list[str]
+    service_name: str
+    retrieved_at: datetime
+    lines: list[ServiceLogLineRead]
+    truncated: bool
+
+    @classmethod
+    def from_snapshot(cls, snapshot: ServiceLogSnapshot) -> ServiceLogRead:
+        return cls(
+            deployment_id=snapshot.deployment_id,
+            services=list(snapshot.services),
+            service_name=snapshot.service_name,
+            retrieved_at=snapshot.retrieved_at,
+            lines=[
+                ServiceLogLineRead(
+                    timestamp=line.timestamp,
+                    stream=line.stream,
+                    message=line.message,
+                )
+                for line in snapshot.lines
+            ],
+            truncated=snapshot.truncated,
+        )

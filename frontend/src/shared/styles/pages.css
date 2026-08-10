@@ -884,6 +884,188 @@ tbody tr:hover {
   color: #fda29b !important;
 }
 
+.service-log-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.service-log-heading {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.service-log-heading h2 {
+  margin-bottom: 0.28rem;
+}
+
+.service-log-heading p {
+  max-width: 620px;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+}
+
+.service-log-controls {
+  display: flex;
+  align-items: end;
+  gap: 0.55rem;
+}
+
+.service-log-controls label {
+  display: grid;
+  min-width: 150px;
+  gap: 0.28rem;
+}
+
+.service-log-controls label > span {
+  color: var(--text-faint);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.service-log-controls select {
+  min-height: 36px;
+  padding-block: 0.4rem;
+  background: var(--surface);
+  font-size: 0.7rem;
+}
+
+.service-log-refresh {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.service-log-refresh svg {
+  width: 15px;
+  height: 15px;
+}
+
+.service-log-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  color: #475467;
+  border: 1px solid #d6e4ff;
+  border-radius: 8px;
+  background: #f5f8ff;
+}
+
+.service-log-notice svg {
+  width: 17px;
+  min-width: 17px;
+  color: var(--blue);
+}
+
+.service-log-notice p {
+  margin: 0;
+  font-size: 0.67rem;
+  line-height: 1.55;
+}
+
+.service-log-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--text-faint);
+  font-size: 0.63rem;
+}
+
+.service-log-meta strong {
+  color: var(--text);
+}
+
+.service-log-output {
+  max-height: 440px;
+  overflow: auto;
+  border: 1px solid #1d2939;
+  border-radius: 9px;
+  background: #0c111d;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.service-log-output ol {
+  min-width: 720px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.service-log-output li {
+  display: grid;
+  min-height: 42px;
+  align-items: start;
+  gap: 0.7rem;
+  padding: 0.62rem 0.8rem;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+  grid-template-columns: 82px 58px minmax(500px, 1fr);
+}
+
+.service-log-output li:last-child {
+  border-bottom: 0;
+}
+
+.service-log-output time,
+.service-log-output pre,
+.service-log-stream {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.65rem;
+}
+
+.service-log-output time {
+  padding-top: 0.18rem;
+  color: #98a2b3;
+}
+
+.service-log-stream {
+  width: max-content;
+  padding: 0.18rem 0.32rem;
+  border-radius: 4px;
+  font-weight: 800;
+}
+
+.service-log-stream.stdout {
+  color: #84adff;
+  background: rgb(36 107 253 / 14%);
+}
+
+.service-log-stream.stderr {
+  color: #fda29b;
+  background: rgb(240 68 56 / 13%);
+}
+
+.service-log-output pre {
+  overflow: visible;
+  margin: 0;
+  color: #e4e7ec;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.service-log-empty {
+  display: grid;
+  min-height: 150px;
+  margin: 0;
+  padding: 1.2rem;
+  color: #98a2b3;
+  place-items: center;
+  text-align: center;
+}
+
+.service-log-error {
+  align-content: center;
+  gap: 0.35rem;
+  color: #fda29b;
+}
+
+.service-log-error small {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.6rem;
+}
+
 .deployment-result {
   display: flex;
   align-items: center;
@@ -1407,6 +1589,22 @@ tbody tr:hover {
 
   .deployment-log-summary {
     justify-items: start;
+  }
+
+  .service-log-heading,
+  .service-log-meta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-log-controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-log-controls label {
+    min-width: 0;
   }
 
   .deployment-metadata {

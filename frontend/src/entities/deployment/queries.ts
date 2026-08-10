@@ -3,6 +3,7 @@ import { queryOptions } from '@tanstack/react-query';
 import {
   getDeployment,
   getRuntimeReconciliation,
+  getServiceLogs,
   listDeploymentEvents,
   listDeployments,
   listRecentDeployments,
@@ -14,6 +15,8 @@ export const deploymentKeys = {
   project: (projectId: string) => ['projects', projectId, 'deployments'] as const,
   detail: (deploymentId: string) => ['deployments', deploymentId] as const,
   events: (deploymentId: string) => ['deployments', deploymentId, 'events'] as const,
+  serviceLogs: (deploymentId: string, serviceName?: string) =>
+    ['deployments', deploymentId, 'service-logs', serviceName ?? 'root'] as const,
   reconciliation: (deploymentId: string) =>
     ['deployments', deploymentId, 'runtime-reconciliation'] as const,
 };
@@ -49,6 +52,15 @@ export const deploymentEventsQuery = (deploymentId: string | undefined, active: 
     queryFn: () => listDeploymentEvents(deploymentId ?? ''),
     enabled: Boolean(deploymentId),
     refetchInterval: active ? 1_000 : false,
+  });
+
+export const deploymentServiceLogsQuery = (deploymentId: string, serviceName?: string) =>
+  queryOptions({
+    queryKey: deploymentKeys.serviceLogs(deploymentId, serviceName),
+    queryFn: () => getServiceLogs(deploymentId, serviceName),
+    enabled: Boolean(deploymentId),
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
 export const runtimeReconciliationQuery = (deploymentId: string) =>

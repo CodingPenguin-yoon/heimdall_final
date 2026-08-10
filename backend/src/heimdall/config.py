@@ -22,6 +22,8 @@ class Settings:
     nginx_image: str
     runtime_command_timeout_seconds: float
     runtime_health_timeout_seconds: float
+    service_log_command_timeout_seconds: float
+    service_log_broker_timeout_seconds: float
     worker_lease_seconds: float
     worker_poll_seconds: float
     worker_max_attempts: int
@@ -63,6 +65,12 @@ class Settings:
             ),
             runtime_health_timeout_seconds=float(
                 os.environ.get("HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS", "60")
+            ),
+            service_log_command_timeout_seconds=float(
+                os.environ.get("HEIMDALL_SERVICE_LOG_COMMAND_TIMEOUT_SECONDS", "5")
+            ),
+            service_log_broker_timeout_seconds=float(
+                os.environ.get("HEIMDALL_SERVICE_LOG_BROKER_TIMEOUT_SECONDS", "6")
             ),
             worker_lease_seconds=float(os.environ.get("HEIMDALL_WORKER_LEASE_SECONDS", "120")),
             worker_poll_seconds=float(os.environ.get("HEIMDALL_WORKER_POLL_SECONDS", "1")),

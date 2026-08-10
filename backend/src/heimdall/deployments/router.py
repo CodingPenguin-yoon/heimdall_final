@@ -1,6 +1,7 @@
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Query, Request, Response, status
 
 from heimdall.deployments.schemas import (
     DeploymentCreate,
@@ -8,6 +9,7 @@ from heimdall.deployments.schemas import (
     DeploymentEventRead,
     DeploymentList,
     DeploymentRead,
+    ServiceLogRead,
 )
 from heimdall.deployments.service import DeploymentService
 
@@ -58,3 +60,22 @@ def list_deployment_events(deployment_id: UUID, request: Request) -> DeploymentE
             DeploymentEventRead.from_event(item) for item in service(request).events(deployment_id)
         ]
     )
+
+
+@router.get("/deployments/{deployment_id}/service-logs", response_model=ServiceLogRead)
+def get_service_logs(
+    deployment_id: UUID,
+    request: Request,
+    response: Response,
+    service_name: Annotated[
+        str | None,
+        Query(
+            alias="service",
+            min_length=1,
+            max_length=32,
+            pattern=r"^[a-z][a-z0-9-]{0,31}$",
+        ),
+    ] = None,
+) -> ServiceLogRead:
+    response.headers["Cache-Control"] = "no-store"
+    return ServiceLogRead.from_snapshot(service(request).service_logs(deployment_id, service_name))

@@ -17,6 +17,7 @@ from heimdall.project_database.repository import PostgresProjectDatabaseReposito
 from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.log_broker import UnixServiceLogBrokerClient, service_log_socket_path
 from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
 from heimdall.runtime.reconciliation_service import RuntimeReconciliationService
 from heimdall.runtime.repository import PostgresRuntimeRepository
@@ -53,7 +54,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app_settings.project_database_runtime_port,
         )
         deployment_repository = PostgresDeploymentRepository(database)
-        deployments = DeploymentService(deployment_repository, projects, project_databases)
+        deployments = DeploymentService(
+            deployment_repository,
+            projects,
+            project_databases,
+            UnixServiceLogBrokerClient(
+                service_log_socket_path(app_settings.runtime_root),
+                timeout_seconds=app_settings.service_log_broker_timeout_seconds,
+            ),
+        )
         runtime_status = RuntimeStatusService(PostgresRuntimeRepository(database), projects)
         runtime_reconciliations = RuntimeReconciliationService(
             PostgresRuntimeReconciliationRepository(database),

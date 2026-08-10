@@ -11,7 +11,7 @@ import pytest
 
 from heimdall.deployments.models import Deployment, DeploymentSource, DeploymentStatus
 from heimdall.deployments.worker import RecoveryDisposition
-from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
+from heimdall.runtime.docker import DockerRuntime, DockerServiceLogReader, HttpHealthProbe
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
@@ -79,6 +79,106 @@ class Progress:
             DeploymentStatus.HEALTH_CHECKING,
         }
         assert code and message
+
+
+def test_service_log_snapshot_redacts_known_secret_and_separates_streams(
+    tmp_path: Path,
+) -> None:
+    project_id = uuid4()
+    deployment_id = uuid4()
+    now = datetime.now(UTC)
+    secret_store = FileSecretStore(tmp_path / "secrets")
+    stored = secret_store.create(
+        f"projects/{project_id}/environment/logs/log_secret",
+        1,
+        "service-log-secret-canary",
+    )
+    deployment = Deployment(
+        id=deployment_id,
+        project_id=project_id,
+        source_type=DeploymentSource.MAIN_HEAD,
+        requested_commit_sha=None,
+        resolved_commit_sha="a" * 40,
+        config_version=1,
+        config_snapshot={
+            "services": [
+                {
+                    "name": "logs",
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "internalPort": 8080,
+                    "healthPath": "/health",
+                    "environment": [
+                        {
+                            "name": "LOG_SECRET",
+                            "kind": "SECRET",
+                            "secretReference": stored.reference,
+                            "secretVersion": stored.version,
+                            "secretFingerprint": stored.fingerprint,
+                        }
+                    ],
+                    "projectDatabaseAccess": False,
+                }
+            ],
+            "routes": [{"path": "/", "service": "logs"}],
+        },
+        status=DeploymentStatus.PREPARING,
+        failure_stage=None,
+        failure_code=None,
+        created_at=now,
+        updated_at=now,
+        terminal_at=None,
+    )
+    runtime = RuntimeDeployment.from_deployment(deployment)
+    runner = SubprocessCommandRunner(heartbeat_interval_seconds=1)
+    docker = DockerRuntime(
+        runner,
+        HttpHealthProbe(interval_seconds=0.1),
+        command_timeout_seconds=120,
+        health_timeout_seconds=20,
+    )
+    source = Path(__file__).parents[1] / "fixtures" / "runtime-service-logs"
+    candidate = None
+    try:
+        candidate = docker.start_candidate(deployment, runtime, source, secret_store, Progress())
+
+        snapshot = DockerServiceLogReader(
+            runner,
+            secret_store,
+            command_timeout_seconds=30,
+        ).read(deployment, None)
+
+        messages = "\n".join(line.message for line in snapshot.lines)
+        assert messages.count("[REDACTED]") == 2
+        assert "service-log-secret-canary" not in messages
+        assert {line.stream.value for line in snapshot.lines} == {"STDOUT", "STDERR"}
+    finally:
+        docker.cleanup_candidate(deployment, runtime)
+    assert candidate is not None
+    assert (
+        runner.run(
+            ["docker", "network", "inspect", candidate.network_name],
+            timeout_seconds=30,
+            check=False,
+        ).returncode
+        != 0
+    )
+    for service in candidate.services:
+        assert (
+            runner.run(
+                ["docker", "inspect", service.container_name],
+                timeout_seconds=30,
+                check=False,
+            ).returncode
+            != 0
+        )
+        assert (
+            runner.run(
+                ["docker", "image", "inspect", service.image_name],
+                timeout_seconds=30,
+                check=False,
+            ).returncode
+            != 0
+        )
 
 
 def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -> None:

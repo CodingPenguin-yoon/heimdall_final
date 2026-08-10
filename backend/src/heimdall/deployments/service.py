@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from copy import deepcopy
 from datetime import datetime
+from typing import Protocol
 from uuid import UUID
 
 from heimdall.common.errors import AppError
@@ -18,6 +19,35 @@ from heimdall.deployments.repository import DeploymentRepository
 from heimdall.deployments.schemas import DeploymentCreate
 from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.logs import ServiceLogError, ServiceLogSnapshot
+
+
+class ServiceLogGateway(Protocol):
+    def fetch(self, deployment_id: UUID, service_name: str | None) -> ServiceLogSnapshot: ...
+
+
+_SERVICE_LOG_ERRORS = {
+    "SERVICE_LOG_SERVICE_NOT_FOUND": (
+        400,
+        "SERVICE_LOG_SERVICE_NOT_FOUND",
+        "Select a service from the immutable deployment snapshot",
+    ),
+    "SERVICE_LOGS_UNAVAILABLE": (
+        409,
+        "SERVICE_LOGS_UNAVAILABLE",
+        "The service container has not been created or is no longer available",
+    ),
+    "RUNTIME_LOG_BROKER_UNAVAILABLE": (
+        503,
+        "RUNTIME_LOG_BROKER_UNAVAILABLE",
+        "The runtime Worker log broker is unavailable",
+    ),
+    "SERVICE_LOG_REDACTION_UNAVAILABLE": (
+        503,
+        "SERVICE_LOG_REDACTION_UNAVAILABLE",
+        "Service logs were withheld because secret redaction could not be prepared",
+    ),
+}
 
 
 class DeploymentService:
@@ -26,10 +56,12 @@ class DeploymentService:
         repository: DeploymentRepository,
         projects: ProjectService,
         project_databases: ProjectDatabaseService | None = None,
+        service_logs: ServiceLogGateway | None = None,
     ) -> None:
         self._repository = repository
         self._projects = projects
         self._project_databases = project_databases
+        self._service_logs = service_logs
 
     def request(self, project_id: UUID, request: DeploymentCreate) -> Deployment:
         project = self._projects.ready(project_id)
@@ -110,3 +142,24 @@ class DeploymentService:
     def events(self, deployment_id: UUID) -> Sequence[DeploymentEvent]:
         self.get(deployment_id)
         return self._repository.list_events(deployment_id)
+
+    def service_logs(
+        self,
+        deployment_id: UUID,
+        service_name: str | None,
+    ) -> ServiceLogSnapshot:
+        self.get(deployment_id)
+        if self._service_logs is None:
+            raise AppError(
+                503,
+                "RUNTIME_LOG_BROKER_UNAVAILABLE",
+                "The runtime Worker log broker is unavailable",
+            )
+        try:
+            return self._service_logs.fetch(deployment_id, service_name)
+        except ServiceLogError as error:
+            status, code, message = _SERVICE_LOG_ERRORS.get(
+                error.code,
+                _SERVICE_LOG_ERRORS["RUNTIME_LOG_BROKER_UNAVAILABLE"],
+            )
+            raise AppError(status, code, message) from error
