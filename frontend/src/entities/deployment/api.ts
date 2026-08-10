@@ -11,6 +11,14 @@ export function listDeployments(projectId: string): Promise<{ items: Deployment[
   return requestJson(`/projects/${projectId}/deployments`);
 }
 
+export function listRecentDeployments(): Promise<{ items: Deployment[] }> {
+  return requestJson('/deployments');
+}
+
+export function getDeployment(deploymentId: string): Promise<Deployment> {
+  return requestJson(`/deployments/${deploymentId}`);
+}
+
 export function createDeployment(
   projectId: string,
   source: { type: 'MAIN_HEAD' } | { type: 'MAIN_COMMIT'; commitSha: string },

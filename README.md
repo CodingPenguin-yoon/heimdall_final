@@ -17,7 +17,9 @@ Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 �
 - plain 환경변수, user secret file, Managed DB password file 주입
 - service health check와 project별 NGINX atomic activation
 - 실패 시 last-known-good preview 보존과 candidate label cleanup
+- 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
 - 배포 event polling, 실패 단계와 안정 preview link
+- 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
 - 밝은 화이트톤 관리 UI
 
 preview port는 초기 범위에서 host의 `127.0.0.1`에만 공개한다. public domain, TLS와 multi-host routing은 아직 포함하지 않는다.
@@ -37,6 +39,7 @@ infra/         로컬 외부 상태
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+.venv/bin/ruff format --check .
 .venv/bin/pytest
 .venv/bin/ruff check .
 .venv/bin/uvicorn heimdall.main:app --reload
@@ -58,8 +61,13 @@ Worker만 Docker socket을 사용한다. API process와 배포 project container
 cd frontend
 pnpm install
 pnpm verify
+pnpm exec playwright install chromium
+pnpm e2e
 pnpm dev
 ```
+
+`pnpm e2e`는 local Vite server와 mock API를 사용해 관리자 runtime 복구 화면을 실제
+Chromium에서 검증한다.
 
 ## Local PostgreSQL
 
@@ -68,6 +76,19 @@ pnpm dev
 ```bash
 cp .env.example .env
 docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
+```
+
+실제 PostgreSQL·Docker·NGINX release smoke는 명시적으로 opt-in한다. 아래 URL의 password는
+로컬 `.env`에 설정한 test 전용 값과 맞춰야 한다.
+
+```bash
+cd backend
+export HEIMDALL_TEST_CONTROL_DB_URL='postgresql://heimdall:<control-password>@127.0.0.1:55432/heimdall_control'
+export HEIMDALL_TEST_MANAGED_DB_ADMIN_URL='postgresql://heimdall_provisioner:<provisioner-password>@127.0.0.1:55433/postgres'
+export HEIMDALL_TEST_MANAGED_DB_CONTAINER='heimdall-managed-postgres'
+export HEIMDALL_TEST_PUBLIC_REPOSITORY_URL='https://github.com/CodingPenguin-yoon/heimdall-test'
+export HEIMDALL_RUN_DOCKER_SMOKE='true'
+.venv/bin/pytest tests/integration
 ```
 
 Mac 로컬 테스트의 checkout, generated NGINX config와 secret file은 저장소의
@@ -110,6 +131,12 @@ QUEUED
 ```
 
 build, start, health 또는 activation이 실패하면 candidate resource만 정리하고 기존 active generation과 Managed PostgreSQL data는 유지한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한 resource만 대상으로 한다.
+
+다음 배포에서 project gateway가 정지 상태면 Worker는 managed·project·gateway label과 실제
+running 상태를 함께 확인한다. exact managed gateway만 저장된 Preview 포트와 기존 active
+network에서 먼저 복원하고, candidate route 검증 후 candidate network를 주 네트워크로 동일
+포트에 다시 생성해 재검증한다. 이 확인이 끝난 뒤에만 DB active 전환과 이전 generation 회수를
+수행하며, 실행 중 gateway와 label이 다른 동명 container는 자동 교체하지 않는다.
 
 Worker가 activation 도중 종료돼 lease가 만료되면 새 Worker는 DB 기록만 믿고 candidate를
 삭제하지 않는다. Control DB의 active deployment, NGINX가 응답하는 deployment ID와 Docker

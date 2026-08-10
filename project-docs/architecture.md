@@ -116,6 +116,11 @@ deployment ID 확인, DB active guard, deterministic name과 managed·project·d
 - 배포마다 전용 Docker network를 만든다.
 - service alias는 `{service}-g-{generation}`처럼 generation별로 고유하다.
 - project NGINX는 기존·candidate network에 잠시 함께 연결될 수 있다.
+- 정지된 project NGINX는 managed·project·gateway exact label과 running 상태가 확인될 때만 다음
+  배포에서 저장된 Preview 포트로 교체한다. 기존 active network에서 last-known-good를 1차
+  복원한 뒤 candidate route를 검증하고, candidate network를 주 네트워크로 동일 포트에 다시
+  생성해 재검증한 다음에만 이전 generation을 회수한다.
+- 실행 중 gateway와 label이 다른 동명 container는 stopped gateway 복구 경로에서 제거하지 않는다.
 - 새 설정은 `nginx -t`, atomic replace, reload, route probe를 통과해야 effective 상태가 된다.
 - generated NGINX는 upstream의 같은 이름 header를 숨기고 실제 loaded generation의
   `X-Heimdall-Deployment-Id`를 응답해 process 재시작 후 관찰 기준을 제공한다.

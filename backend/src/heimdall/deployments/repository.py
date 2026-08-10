@@ -36,6 +36,8 @@ class DeploymentRepository(Protocol):
 
     def list_for_project(self, project_id: UUID) -> Sequence[Deployment]: ...
 
+    def list_recent(self, limit: int = 100) -> Sequence[Deployment]: ...
+
     def list_uncertain_before(self, cutoff: datetime, limit: int = 100) -> Sequence[Deployment]: ...
 
     def get(self, deployment_id: UUID) -> Deployment: ...
@@ -129,6 +131,18 @@ class PostgresDeploymentRepository:
                 LIMIT 50
                 """,
                 (project_id,),
+            ).fetchall()
+        return [_deployment(row) for row in rows]
+
+    def list_recent(self, limit: int = 100) -> Sequence[Deployment]:
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM deployments
+                ORDER BY created_at DESC, id ASC
+                LIMIT %s
+                """,
+                (limit,),
             ).fetchall()
         return [_deployment(row) for row in rows]
 

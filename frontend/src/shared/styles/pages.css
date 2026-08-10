@@ -491,6 +491,458 @@ tbody tr:hover {
   color: #b42318 !important;
 }
 
+.deployment-list .row-arrow {
+  justify-self: end;
+}
+
+.deployment-detail-page {
+  max-width: 1180px;
+  margin-inline: auto;
+}
+
+.deployment-detail-hero {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 1.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 88% 20%, rgb(36 107 253 / 10%), transparent 28%), var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.deployment-detail-hero p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.deployment-detail-hero p code {
+  color: var(--blue);
+  font-weight: 800;
+}
+
+.deployment-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.deployment-detail-title h1 {
+  margin-bottom: 0.45rem;
+}
+
+.deployment-status {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  padding: 0.34rem 0.62rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.deployment-status-active {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.deployment-status-succeeded {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.deployment-status-failed {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.deployment-metadata {
+  display: grid;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+}
+
+.deployment-metadata > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.28rem;
+  padding: 0.85rem;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.deployment-metadata > div:nth-child(2n),
+.deployment-metadata > div:last-child {
+  border-right: 0;
+}
+
+.deployment-metadata > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.deployment-metadata .deployment-commit {
+  border-right: 0;
+  grid-column: 1 / -1;
+}
+
+.deployment-metadata dt {
+  color: var(--text-faint);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.deployment-metadata dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.deployment-metadata code {
+  color: #475467;
+  font-size: 0.72rem;
+}
+
+.deployment-progress {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  list-style: none;
+}
+
+.deployment-progress li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.deployment-progress li::after {
+  position: absolute;
+  z-index: 0;
+  top: 16px;
+  left: calc(50% + 18px);
+  width: calc(100% - 36px);
+  height: 2px;
+  background: var(--border);
+  content: '';
+}
+
+.deployment-progress li:last-child::after {
+  display: none;
+}
+
+.deployment-progress li > span {
+  z-index: 1;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  font-size: 0.7rem;
+  font-weight: 800;
+  place-items: center;
+}
+
+.deployment-progress li > span svg {
+  width: 15px;
+  height: 15px;
+}
+
+.deployment-progress li > div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.deployment-progress strong {
+  color: inherit;
+  font-size: 0.7rem;
+}
+
+.deployment-progress small {
+  color: inherit;
+  font-size: 0.62rem;
+}
+
+.deployment-progress .complete,
+.deployment-progress .current {
+  color: var(--blue);
+}
+
+.deployment-progress .complete::after {
+  background: #a9c7ff;
+}
+
+.deployment-progress .complete > span {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.deployment-progress .current > span {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  box-shadow: 0 0 0 4px rgb(36 107 253 / 10%);
+}
+
+.deployment-progress .failed {
+  color: var(--red);
+}
+
+.deployment-progress .failed > span {
+  border-color: var(--red);
+  background: var(--red-soft);
+  box-shadow: 0 0 0 4px rgb(197 45 54 / 9%);
+}
+
+.deployment-log-heading {
+  align-items: flex-start;
+}
+
+.deployment-log-heading h2 {
+  margin-bottom: 0.28rem;
+}
+
+.deployment-log-heading p {
+  max-width: 650px;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+}
+
+.deployment-log-summary {
+  display: grid;
+  justify-items: end;
+  gap: 0.4rem;
+}
+
+.deployment-log-summary small {
+  color: var(--text-faint);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.deployment-log-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.52rem;
+  border-radius: 999px;
+  font-size: 0.67rem;
+  font-weight: 800;
+}
+
+.deployment-log-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.deployment-log-state.live {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.deployment-log-state.complete {
+  color: var(--text-soft);
+  background: var(--surface-subtle);
+}
+
+.deployment-log-body {
+  max-height: 380px;
+  overflow: auto;
+  border: 1px solid #1d2939;
+  border-radius: 9px;
+  background: #101828;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.deployment-log-body ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.deployment-log-body li {
+  position: relative;
+  display: grid;
+  min-width: 760px;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.72rem 0.9rem 0.72rem 1.05rem;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+  grid-template-columns: 82px 108px minmax(185px, 0.7fr) minmax(280px, 1.3fr);
+}
+
+.deployment-log-body li:last-child {
+  border-bottom: 0;
+}
+
+.deployment-log-body li.latest {
+  background: rgb(36 107 253 / 9%);
+}
+
+.deployment-log-body li.latest::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: #5b8cff;
+  content: '';
+}
+
+.deployment-log-body li.succeeded.latest {
+  background: rgb(34 166 90 / 9%);
+}
+
+.deployment-log-body li.succeeded.latest::before {
+  background: #32d583;
+}
+
+.deployment-log-body li.failed.latest {
+  background: rgb(240 68 56 / 10%);
+}
+
+.deployment-log-body li.failed.latest::before {
+  background: #f97066;
+}
+
+.deployment-log-body time,
+.deployment-log-body code,
+.deployment-log-body p {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.67rem;
+}
+
+.deployment-log-body time {
+  color: #98a2b3;
+}
+
+.deployment-log-body li > span {
+  width: max-content;
+  padding: 0.25rem 0.4rem;
+  color: #d0d5dd;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 4%);
+  font-size: 0.62rem;
+  font-weight: 750;
+}
+
+.deployment-log-body code {
+  overflow: hidden;
+  color: #84adff;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deployment-log-body li.succeeded code {
+  color: #75e0a7;
+}
+
+.deployment-log-body li.failed code {
+  color: #fda29b;
+}
+
+.deployment-log-body p {
+  margin: 0;
+  color: #e4e7ec;
+  line-height: 1.5;
+}
+
+.deployment-log-empty {
+  display: grid;
+  min-height: 170px;
+  margin: 0;
+  padding: 1.25rem;
+  color: #98a2b3 !important;
+  font-family: inherit !important;
+  place-items: center;
+  text-align: center;
+}
+
+.deployment-log-error {
+  color: #fda29b !important;
+}
+
+.deployment-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-left-width: 4px;
+}
+
+.deployment-result h2 {
+  margin-bottom: 0.3rem;
+}
+
+.deployment-result p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.deployment-result-active {
+  border-left-color: var(--blue);
+}
+
+.deployment-result-succeeded {
+  border-left-color: var(--green);
+  background: linear-gradient(90deg, var(--green-soft), var(--surface) 28%);
+}
+
+.deployment-result-failed {
+  align-items: end;
+  border-left-color: var(--red);
+  background: linear-gradient(90deg, var(--red-soft), var(--surface) 28%);
+}
+
+.deployment-result dl {
+  display: grid;
+  min-width: min(100%, 360px);
+  margin: 0;
+  gap: 0.5rem;
+}
+
+.deployment-result dl > div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.deployment-result dt {
+  color: var(--text-faint);
+  font-size: 0.63rem;
+  font-weight: 750;
+}
+
+.deployment-result dd {
+  margin: 0;
+  color: var(--red);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.69rem;
+  font-weight: 750;
+}
+
 .runtime-reconciliation {
   display: grid;
   gap: 0.7rem;
@@ -629,6 +1081,243 @@ tbody tr:hover {
   text-align: center;
 }
 
+.deployment-activity-page {
+  max-width: 1280px;
+  margin-inline: auto;
+}
+
+.activity-live-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.7rem;
+  color: #526176;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.activity-live-note > span {
+  width: 7px;
+  height: 7px;
+  border: 2px solid #c8f3d5;
+  border-radius: 50%;
+  background: #26a758;
+  box-sizing: content-box;
+}
+
+.activity-panel-heading {
+  margin-bottom: 0.8rem;
+}
+
+.activity-filters {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.activity-filter-buttons {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.activity-filter-buttons button {
+  min-height: 34px;
+  padding: 0.45rem 0.7rem;
+  color: #667085;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background: transparent;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.activity-filter-buttons button:hover {
+  color: #344054;
+  background: #eef2f7;
+}
+
+.activity-filter-buttons button.selected {
+  color: var(--blue);
+  border-color: #cfe0ff;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.activity-project-filter {
+  display: grid;
+  min-width: 210px;
+  gap: 0.28rem;
+}
+
+.activity-project-filter span {
+  color: var(--text-faint);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.activity-project-filter select {
+  min-height: 34px;
+  padding-block: 0.35rem;
+  background: var(--surface);
+  font-size: 0.7rem;
+}
+
+.activity-table {
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.activity-col-project {
+  width: 250px;
+}
+
+.activity-col-commit {
+  width: 90px;
+}
+
+.activity-col-source {
+  width: 90px;
+}
+
+.activity-col-status {
+  width: 170px;
+}
+
+.activity-col-requested,
+.activity-col-finished {
+  width: 100px;
+}
+
+.activity-col-detail {
+  width: 90px;
+}
+
+.activity-table th:last-child,
+.activity-table td:last-child {
+  position: sticky;
+  z-index: 1;
+  right: 0;
+  background: var(--surface);
+  box-shadow: -10px 0 14px -14px rgb(16 24 40 / 45%);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.activity-table th:last-child {
+  z-index: 2;
+  background: var(--surface-subtle);
+}
+
+.activity-table tbody tr:hover td:last-child {
+  background: #fbfdff;
+}
+
+.activity-detail-link {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.58rem;
+  color: #344054;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 0.67rem;
+  font-weight: 750;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.activity-detail-link:hover {
+  color: var(--blue);
+  border-color: #b8d0ff;
+  background: var(--blue-soft);
+}
+
+.activity-detail-link svg {
+  width: 15px;
+  height: 15px;
+}
+
+.activity-table .project-name {
+  width: 100%;
+  min-width: 0;
+}
+
+.activity-table .project-name div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.activity-table .project-name strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-commit,
+.activity-status-cell {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.activity-commit code {
+  color: #344054;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.activity-commit small,
+.activity-status-cell small {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  color: var(--text-faint);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-status-cell .deployment-status {
+  padding: 0.28rem 0.48rem;
+  font-size: 0.64rem;
+}
+
+.activity-source {
+  display: inline-flex;
+  width: max-content;
+  padding: 0.3rem 0.45rem;
+  color: #526176;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.activity-filter-empty {
+  min-height: 180px;
+}
+
 @media (max-width: 1100px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -663,6 +1352,19 @@ tbody tr:hover {
     border-bottom: 1px solid var(--border);
   }
 
+  .activity-live-note {
+    align-self: flex-start;
+  }
+
+  .activity-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .activity-project-filter {
+    min-width: 0;
+  }
+
   .project-hero,
   .setup-banner,
   .preview-access-value {
@@ -686,6 +1388,58 @@ tbody tr:hover {
   .topology-list article .health-pill,
   .topology-list article .database-pill {
     grid-column: 2;
+  }
+
+  .deployment-detail-hero,
+  .deployment-result-failed {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .deployment-detail-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .deployment-log-heading {
+    flex-direction: column;
+  }
+
+  .deployment-log-summary {
+    justify-items: start;
+  }
+
+  .deployment-metadata {
+    grid-template-columns: 1fr;
+  }
+
+  .deployment-metadata > div,
+  .deployment-metadata > div:nth-child(2n),
+  .deployment-metadata > div:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .deployment-metadata > div:last-child {
+    border-bottom: 0;
+  }
+
+  .deployment-progress {
+    gap: 0.7rem;
+    grid-template-columns: 1fr;
+  }
+
+  .deployment-progress li {
+    justify-items: start;
+    grid-template-columns: auto 1fr;
+    text-align: left;
+  }
+
+  .deployment-progress li::after {
+    top: 36px;
+    left: 16px;
+    width: 2px;
+    height: calc(100% - 20px);
   }
 }
 

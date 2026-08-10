@@ -139,6 +139,13 @@ export function ProjectDetailPage() {
                     </div>
                     <code>{shortSha(deployment.resolvedCommitSha)}</code>
                     <small>Config v{deployment.configVersion}</small>
+                    <Link
+                      className="row-arrow"
+                      to={`/deployments/${deployment.id}`}
+                      aria-label={`${shortSha(deployment.resolvedCommitSha)} 배포 상세 열기`}
+                    >
+                      <Icon name="arrow" />
+                    </Link>
                     {deployment.failureCode === 'RECOVERY_STATE_UNCERTAIN' ? (
                       <RuntimeReconciliationPanel deployment={deployment} projectId={projectId} />
                     ) : null}

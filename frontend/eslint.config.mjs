@@ -5,7 +5,7 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage'] },
+  { ignores: ['dist', 'coverage', 'playwright-report', 'test-results'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -28,6 +28,14 @@ export default tseslint.config(
   {
     files: ['src/**/*.test.{ts,tsx}', 'src/app/test/**/*.{ts,tsx}'],
     languageOptions: { globals: globals.node },
+  },
+  {
+    files: ['e2e/**/*.ts', 'playwright.config.ts'],
+    languageOptions: {
+      globals: globals.node,
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+    },
+    rules: { '@typescript-eslint/consistent-type-imports': 'error' },
   },
   {
     files: ['src/shared/**/*.{ts,tsx}'],

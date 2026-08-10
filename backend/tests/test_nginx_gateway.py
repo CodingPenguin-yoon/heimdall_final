@@ -12,7 +12,7 @@ from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure
 from heimdall.runtime.docker import CandidateGeneration, RunningService
 from heimdall.runtime.gateway import GatewayObservation, HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.models import RuntimeDeployment
-from heimdall.runtime.process import CommandResult
+from heimdall.runtime.process import CommandExecutionError, CommandResult
 from heimdall.runtime.repository import ProjectRuntime
 
 
@@ -99,16 +99,78 @@ class ExistingGatewayRunner(GatewayRunner):
         command = list(arguments)
         if command[1] == "inspect":
             self.calls.append(command)
+            labels = {
+                "heimdall.managed": "true",
+                "heimdall.project-id": str(self.project_id),
+                "heimdall.kind": "gateway",
+            }
+            output = (
+                {"labels": labels, "running": True} if ".State.Running" in command[3] else labels
+            )
             return CommandResult(
                 0,
-                json.dumps(
-                    {
-                        "heimdall.managed": "true",
-                        "heimdall.project-id": str(self.project_id),
-                        "heimdall.kind": "gateway",
-                    }
-                ),
+                json.dumps(output),
             )
+        return super().run(
+            command,
+            timeout_seconds=timeout_seconds,
+            heartbeat=heartbeat,
+            check=check,
+        )
+
+
+class StoppedGatewayRunner(ExistingGatewayRunner):
+    def __init__(self, project_id, *, fail_detached_run: int | None = None) -> None:
+        super().__init__(project_id)
+        self.gateway_exists = True
+        self.gateway_running = False
+        self.detached_runs = 0
+        self.fail_detached_run = fail_detached_run
+
+    def run(
+        self,
+        arguments,
+        *,
+        timeout_seconds,
+        heartbeat=None,
+        check=True,
+    ) -> CommandResult:
+        command = list(arguments)
+        if command[1] == "inspect":
+            self.calls.append(command)
+            if not self.gateway_exists:
+                return CommandResult(1, "")
+            labels = {
+                "heimdall.managed": "true",
+                "heimdall.project-id": str(self.project_id),
+                "heimdall.kind": "gateway",
+            }
+            output = (
+                {"labels": labels, "running": self.gateway_running}
+                if ".State.Running" in command[3]
+                else labels
+            )
+            return CommandResult(
+                0,
+                json.dumps(output),
+            )
+        if command[1] == "rm":
+            self.calls.append(command)
+            if heartbeat is not None:
+                heartbeat()
+            self.gateway_exists = False
+            self.gateway_running = False
+            return CommandResult(0, "")
+        if command[1:3] == ["run", "--detach"]:
+            self.calls.append(command)
+            if heartbeat is not None:
+                heartbeat()
+            self.detached_runs += 1
+            if self.detached_runs == self.fail_detached_run:
+                raise CommandExecutionError(1)
+            self.gateway_exists = True
+            self.gateway_running = True
+            return CommandResult(0, "")
         return super().run(
             command,
             timeout_seconds=timeout_seconds,
@@ -303,6 +365,127 @@ def test_unmanaged_gateway_name_collision_is_rejected(tmp_path: Path) -> None:
     assert raised.value.code == "GATEWAY_NAME_CONFLICT"
     assert repository.item is None
     assert docker.promoted is None
+
+
+def test_activation_recreates_stopped_managed_gateway_on_stored_port_and_network(
+    tmp_path: Path,
+) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    gateway_name = f"hm-p{item.project_id.hex[:12]}-gateway"
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=gateway_name,
+        preview_port=48080,
+        active_deployment_id=uuid4(),
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    runner = StoppedGatewayRunner(item.project_id)
+    route = HealthyRoute()
+    activator = NginxGatewayActivator(
+        repository,
+        GatewayDocker(),
+        runner,
+        route,
+        tmp_path / "gateways",
+    )
+
+    activator.activate(item, runtime, candidate(), Progress())
+
+    assert repository.item is not None
+    assert repository.item.preview_port == 48080
+    assert ["docker", "rm", gateway_name] in runner.calls
+    assert ["docker", "rm", "--force", gateway_name] in runner.calls
+    create_calls = [call for call in runner.calls if call[1:3] == ["run", "--detach"]]
+    assert [call[call.index("--network") + 1] for call in create_calls] == [
+        "previous-network",
+        candidate().network_name,
+    ]
+    assert [call[call.index("--publish") + 1] for call in create_calls] == [
+        "127.0.0.1:48080:8080",
+        "127.0.0.1:48080:8080",
+    ]
+    assert route.urls == ["http://127.0.0.1:48080/", "http://127.0.0.1:48080/"]
+
+
+def test_failed_candidate_network_rebase_restores_previous_gateway(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    previous_id = uuid4()
+    gateway_name = f"hm-p{item.project_id.hex[:12]}-gateway"
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=gateway_name,
+        preview_port=48080,
+        active_deployment_id=previous_id,
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    runner = StoppedGatewayRunner(item.project_id, fail_detached_run=2)
+    docker = GatewayDocker()
+    activator = NginxGatewayActivator(
+        repository,
+        docker,
+        runner,
+        HealthyRoute(),
+        tmp_path / "gateways",
+    )
+
+    with pytest.raises(RuntimeFailure) as raised:
+        activator.activate(item, runtime, candidate(), Progress())
+
+    assert raised.value.code == "GATEWAY_START_FAILED"
+    assert repository.item is not None
+    assert repository.item.active_deployment_id == previous_id
+    assert runner.gateway_exists is True
+    assert runner.gateway_running is True
+    create_calls = [call for call in runner.calls if call[1:3] == ["run", "--detach"]]
+    assert [call[call.index("--network") + 1] for call in create_calls] == [
+        "previous-network",
+        candidate().network_name,
+        "previous-network",
+    ]
+    current = (tmp_path / "gateways" / item.project_id.hex / "current.conf").read_text()
+    assert 'X-Heimdall-Deployment-Id "none"' in current
+    assert docker.promoted is None
+    assert docker.retired == []
+
+
+def test_activation_reuses_running_managed_gateway(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    gateway_name = f"hm-p{item.project_id.hex[:12]}-gateway"
+    repository = MemoryRuntimes()
+    repository.item = ProjectRuntime(
+        project_id=item.project_id,
+        gateway_container_name=gateway_name,
+        preview_port=48080,
+        active_deployment_id=uuid4(),
+        active_network_name="previous-network",
+        active_container_names=("previous-container",),
+        active_image_names=("previous-image",),
+        updated_at=datetime.now(UTC),
+    )
+    runner = ExistingGatewayRunner(item.project_id)
+    activator = NginxGatewayActivator(
+        repository,
+        GatewayDocker(),
+        runner,
+        HealthyRoute(),
+        tmp_path / "gateways",
+    )
+
+    activator.activate(item, runtime, candidate(), Progress())
+
+    assert not any(call[1] == "rm" for call in runner.calls)
+    assert not any(call[1:4] == ["run", "--detach", "--name"] for call in runner.calls)
 
 
 def test_recovery_finalizes_the_generation_served_by_nginx(tmp_path: Path) -> None:

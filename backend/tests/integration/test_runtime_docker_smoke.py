@@ -81,7 +81,7 @@ class Progress:
         assert code and message
 
 
-def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: Path) -> None:
+def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -> None:
     project_id = uuid4()
     deployment_id = uuid4()
     now = datetime.now(UTC)
@@ -134,6 +134,8 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
     cleanup_candidate = None
     cleanup_deployment = None
     cleanup_runtime = None
+    replacement_deployment = None
+    replacement_runtime = None
     try:
         candidate = docker.start_candidate(
             deployment,
@@ -167,6 +169,47 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
 
         assert gateway.recover(deployment, runtime, Progress()) is RecoveryDisposition.ACTIVE
         assert runtimes.item.active_deployment_id == deployment.id
+
+        stable_port = runtimes.item.preview_port
+        gateway_name = runtimes.item.gateway_container_name
+        runner.run(
+            ["docker", "stop", gateway_name],
+            timeout_seconds=30,
+        )
+        replacement_deployment = replace(deployment, id=uuid4())
+        replacement_runtime = RuntimeDeployment.from_deployment(replacement_deployment)
+        replacement_candidate = docker.start_candidate(
+            replacement_deployment,
+            replacement_runtime,
+            source,
+            FileSecretStore(tmp_path / "replacement-secrets"),
+            Progress(),
+        )
+
+        gateway.activate(
+            replacement_deployment,
+            replacement_runtime,
+            replacement_candidate,
+            Progress(),
+        )
+
+        assert runtimes.item.active_deployment_id == replacement_deployment.id
+        assert runtimes.item.preview_port == stable_port
+        assert (
+            runner.run(
+                ["docker", "inspect", "--format", "{{json .State.Running}}", gateway_name],
+                timeout_seconds=30,
+            ).stdout.strip()
+            == "true"
+        )
+        HttpRouteProbe().probe(
+            f"http://127.0.0.1:{stable_port}/",
+            timeout_seconds=10,
+            heartbeat=Progress().heartbeat,
+        )
+        with urlopen(f"http://127.0.0.1:{stable_port}/", timeout=3) as response:
+            assert response.headers["X-Heimdall-Deployment-Id"] == str(replacement_deployment.id)
+            assert response.read() == b"heimdall runtime smoke\n"
 
         cleanup_deployment = replace(deployment, id=uuid4())
         cleanup_runtime = RuntimeDeployment.from_deployment(cleanup_deployment)
@@ -207,7 +250,7 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
             f"http://127.0.0.1:{runtimes.item.preview_port}/",
             timeout=3,
         ) as response:
-            assert response.headers["X-Heimdall-Deployment-Id"] == str(deployment.id)
+            assert response.headers["X-Heimdall-Deployment-Id"] == str(replacement_deployment.id)
             assert response.read() == b"heimdall runtime smoke\n"
     finally:
         if cleanup_deployment is not None and cleanup_runtime is not None:
@@ -218,4 +261,6 @@ def test_single_service_candidate_is_activated_behind_stable_gateway(tmp_path: P
             timeout_seconds=30,
             check=False,
         )
+        if replacement_deployment is not None and replacement_runtime is not None:
+            docker.cleanup_candidate(replacement_deployment, replacement_runtime)
         docker.cleanup_candidate(deployment, runtime)

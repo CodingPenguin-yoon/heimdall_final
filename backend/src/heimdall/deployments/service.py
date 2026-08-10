@@ -83,6 +83,9 @@ class DeploymentService:
         self._projects.get(project_id)
         return self._repository.list_for_project(project_id)
 
+    def list_recent(self) -> Sequence[Deployment]:
+        return self._repository.list_recent(limit=100)
+
     def get(self, deployment_id: UUID) -> Deployment:
         try:
             return self._repository.get(deployment_id)
