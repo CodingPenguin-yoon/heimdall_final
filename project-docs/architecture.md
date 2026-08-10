@@ -15,8 +15,8 @@ Python Worker -> PostgreSQL claim/lease
               -> Docker generation candidate
               -> project NGINX activation
 
-FastAPI API -> owner-only Unix socket -> Worker log broker
-                                    -> exact-label Docker inspect/logs
+FastAPI API -> owner-only Unix socket -> Worker snapshot log broker -> exact-label Docker logs
+                                    -> Worker live log broker     -> exact-label Docker logs --follow
 ```
 
 API와 Worker는 같은 Python package를 사용하지만 별도 command로 실행한다. Docker socket은 Worker만 사용한다.
@@ -113,13 +113,19 @@ deployment ID 확인, DB active guard, deterministic name과 managed·project·d
 검사를 통과해야 한다.
 
 `deployment_events`는 Worker가 생성한 bounded message와 stable code만 저장한다. child process stderr와
-application stdout, environment 원문은 저장하지 않는다. application stdout·stderr 조회는 별도
-snapshot 계약으로만 허용한다. API는 Docker socket 대신 runtime root의 `logs.sock`에 연결하고,
-Worker가 immutable deployment snapshot의 service와 deterministic container exact label을 다시
-검증한 뒤 최근 200줄만 읽는다. 알려진 project secret과 managed database password는 Worker에서
-fail-closed exact redaction한 뒤 전달하며 raw·redacted 로그를 Control DB나 filesystem에 저장하지 않는다.
-Docker timestamp가 삽입된 line 경계를 넘어 안전하게 exact 치환할 수 없는 multiline·oversized
-secret은 로그 원문을 읽기 전에 redaction unavailable로 차단한다.
+application stdout, environment 원문은 저장하지 않는다. application stdout·stderr는 bounded snapshot과
+SSE live follow 계약으로만 허용한다. API는 Docker socket 대신 runtime root의 `logs.sock`과
+`log-stream.sock`에 연결하고, Worker가 immutable deployment snapshot의 service와 deterministic
+container exact label을 다시 검증한 뒤 최근 200줄 또는 tail 200부터의 follow만 읽는다. 알려진
+project secret과 managed database password는 Worker에서 fail-closed exact redaction한 뒤 전달하며
+raw·redacted 로그를 Control DB나 filesystem에 저장하지 않는다. Docker timestamp가 삽입된 line
+경계를 넘어 안전하게 exact 치환할 수 없는 multiline·oversized secret은 로그 원문을 읽기 전에
+redaction unavailable로 차단한다.
+
+live broker는 snapshot broker와 별도 owner-only socket·최대 4개 capacity를 사용한다. stdout·stderr
+reader는 bounded queue로 backpressure를 전달하고 5초 keepalive로 출력이 없는 disconnect도 감지한다.
+API subscription close는 Worker socket close로, 다시 Docker follow process group terminate로 전파된다.
+SSE 재연결은 durable cursor 대신 새 tail 200 session으로 UI buffer를 교체한다.
 
 ## Runtime generation
 
@@ -143,6 +149,6 @@ secret은 로그 원문을 읽기 전에 redaction unavailable로 차단한다.
 - Docker cleanup 전에 managed label과 deployment ID를 다시 검사하며 이름만 일치하는 외부 resource는 변경하지 않는다.
 - reconciliation cleanup은 삭제 전후 exact label resource를 관찰하며 Docker 명령 실패나 이름
   충돌을 정리 성공으로 기록하지 않는다.
-- service log broker socket parent는 owner-only이고 socket은 `0600`이다. request·response 크기,
-  동시 처리 수와 Docker command timeout을 제한하며 socket이 안전하지 않으면 로그 broker만
-  비활성화하고 deployment Worker loop는 계속 실행한다.
+- service log broker socket parent는 owner-only이고 snapshot·live socket은 `0600`이다. frame 크기,
+  동시 처리 수, Docker command timeout과 follow process lifecycle을 제한하며 socket이 안전하지 않으면
+  해당 로그 broker만 비활성화하고 deployment Worker loop는 계속 실행한다.

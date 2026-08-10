@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,10 +12,17 @@ import pytest
 
 from heimdall.deployments.models import Deployment, DeploymentSource, DeploymentStatus
 from heimdall.deployments.worker import RecoveryDisposition
-from heimdall.runtime.docker import DockerRuntime, DockerServiceLogReader, HttpHealthProbe
+from heimdall.runtime.docker import (
+    DockerRuntime,
+    DockerServiceLogReader,
+    DockerServiceLogStreamer,
+    HttpHealthProbe,
+)
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
+from heimdall.runtime.logs import ServiceLogStreamLine
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
+from heimdall.runtime.process_stream import SubprocessCommandStreamRunner
 from heimdall.runtime.repository import ProjectRuntime
 from heimdall.secrets.store import FileSecretStore
 
@@ -79,6 +87,19 @@ class Progress:
             DeploymentStatus.HEALTH_CHECKING,
         }
         assert code and message
+
+
+def collect_service_log_lines(subscription, count: int) -> list[ServiceLogStreamLine]:
+    events: list[ServiceLogStreamLine] = []
+    deadline = time.monotonic() + 10
+    while len(events) < count:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(f"timed out waiting for {count} service log lines")
+        event = subscription.receive(min(2, remaining))
+        if isinstance(event, ServiceLogStreamLine):
+            events.append(event)
+    return events
 
 
 def test_service_log_snapshot_redacts_known_secret_and_separates_streams(
@@ -179,6 +200,101 @@ def test_service_log_snapshot_redacts_known_secret_and_separates_streams(
             ).returncode
             != 0
         )
+
+
+def test_service_log_stream_redacts_tail_and_follow_and_closes_cleanly(tmp_path: Path) -> None:
+    project_id = uuid4()
+    deployment_id = uuid4()
+    now = datetime.now(UTC)
+    secret_store = FileSecretStore(tmp_path / "secrets")
+    stored = secret_store.create(
+        f"projects/{project_id}/environment/logs/log_secret",
+        1,
+        "service-log-stream-secret-canary",
+    )
+    deployment = Deployment(
+        id=deployment_id,
+        project_id=project_id,
+        source_type=DeploymentSource.MAIN_HEAD,
+        requested_commit_sha=None,
+        resolved_commit_sha="a" * 40,
+        config_version=1,
+        config_snapshot={
+            "services": [
+                {
+                    "name": "logs",
+                    "build": {"context": ".", "dockerfile": "Dockerfile"},
+                    "internalPort": 8080,
+                    "healthPath": "/health",
+                    "environment": [
+                        {
+                            "name": "LOG_SECRET",
+                            "kind": "SECRET",
+                            "secretReference": stored.reference,
+                            "secretVersion": stored.version,
+                            "secretFingerprint": stored.fingerprint,
+                        }
+                    ],
+                    "projectDatabaseAccess": False,
+                }
+            ],
+            "routes": [{"path": "/", "service": "logs"}],
+        },
+        status=DeploymentStatus.PREPARING,
+        failure_stage=None,
+        failure_code=None,
+        created_at=now,
+        updated_at=now,
+        terminal_at=None,
+    )
+    runtime = RuntimeDeployment.from_deployment(deployment)
+    runner = SubprocessCommandRunner(heartbeat_interval_seconds=1)
+    docker = DockerRuntime(
+        runner,
+        HttpHealthProbe(interval_seconds=0.1),
+        command_timeout_seconds=120,
+        health_timeout_seconds=20,
+    )
+    source = Path(__file__).parents[1] / "fixtures" / "runtime-service-logs"
+    subscription = None
+    candidate = None
+    try:
+        candidate = docker.start_candidate(deployment, runtime, source, secret_store, Progress())
+        subscription = DockerServiceLogStreamer(
+            runner,
+            SubprocessCommandStreamRunner(),
+            secret_store,
+            command_timeout_seconds=30,
+        ).open(deployment, None)
+
+        events = collect_service_log_lines(subscription, 2)
+
+        with urlopen(
+            f"http://127.0.0.1:{candidate.services[0].health_port}/emit",
+            timeout=3,
+        ) as response:
+            assert response.status == 200
+
+        events.extend(collect_service_log_lines(subscription, 2))
+
+        joined = "\n".join(event.line.message for event in events)
+        assert joined.count("[REDACTED]") == 4
+        assert "service-log-stream-secret-canary" not in joined
+        assert {event.line.stream.value for event in events} == {"STDOUT", "STDERR"}
+    finally:
+        if subscription is not None:
+            subscription.close()
+        docker.cleanup_candidate(deployment, runtime)
+
+    assert candidate is not None
+    assert (
+        runner.run(
+            ["docker", "network", "inspect", candidate.network_name],
+            timeout_seconds=30,
+            check=False,
+        ).returncode
+        != 0
+    )
 
 
 def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -> None:

@@ -65,8 +65,8 @@ class UnixServiceLogBrokerServer:
     def start(self) -> None:
         if self._listener is not None:
             return
-        _ensure_private_directory(self._path.parent)
-        _remove_stale_socket(self._path)
+        ensure_private_socket_directory(self._path.parent)
+        remove_stale_owned_socket(self._path)
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         bound_identity: tuple[int, int] | None = None
         try:
@@ -81,7 +81,7 @@ class UnixServiceLogBrokerServer:
         except BaseException:
             listener.close()
             if bound_identity is not None:
-                _remove_exact_socket(self._path, bound_identity)
+                remove_exact_owned_socket(self._path, bound_identity)
             raise
 
         self._stop.clear()
@@ -111,7 +111,7 @@ class UnixServiceLogBrokerServer:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         if self._socket_identity is not None:
-            _remove_exact_socket(self._path, self._socket_identity)
+            remove_exact_owned_socket(self._path, self._socket_identity)
         self._socket_identity = None
 
     def _serve(self) -> None:
@@ -345,7 +345,7 @@ def _receive_line(connection: socket.socket, limit: int) -> bytes:
             return line
 
 
-def _ensure_private_directory(path: Path) -> None:
+def ensure_private_socket_directory(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     metadata = path.lstat()
     if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
@@ -353,7 +353,7 @@ def _ensure_private_directory(path: Path) -> None:
     os.chmod(path, 0o700, follow_symlinks=False)
 
 
-def _remove_stale_socket(path: Path) -> None:
+def remove_stale_owned_socket(path: Path) -> None:
     try:
         metadata = path.lstat()
     except FileNotFoundError:
@@ -374,10 +374,10 @@ def _remove_stale_socket(path: Path) -> None:
     finally:
         active.close()
 
-    _remove_exact_socket(path, (metadata.st_dev, metadata.st_ino))
+    remove_exact_owned_socket(path, (metadata.st_dev, metadata.st_ino))
 
 
-def _remove_exact_socket(path: Path, identity: tuple[int, int]) -> None:
+def remove_exact_owned_socket(path: Path, identity: tuple[int, int]) -> None:
     try:
         metadata = path.lstat()
     except FileNotFoundError:

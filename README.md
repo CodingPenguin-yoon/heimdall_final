@@ -56,8 +56,9 @@ cd backend
 
 Worker만 Docker socket을 사용한다. API process와 배포 project container에는 Docker socket을 전달하지 않는다.
 서비스 로그 조회도 API가 Docker를 직접 호출하지 않고 같은 `HEIMDALL_RUNTIME_ROOT`의 owner-only
-`logs.sock`을 통해 Worker에 요청한다. API와 Worker를 함께 실행해야 하며 Worker가 없으면 조회만
-stable `503 RUNTIME_LOG_BROKER_UNAVAILABLE`로 실패하고 배포 처리 상태는 바뀌지 않는다.
+`logs.sock`과 `log-stream.sock`을 통해 Worker에 요청한다. API와 Worker를 함께 실행해야 하며
+Worker가 없으면 로그 조회만 stable `503`으로 실패하고 배포 처리 상태는 바뀌지 않는다. snapshot과
+live stream은 각각 최대 4개 처리 슬롯을 사용해 장시간 SSE 연결이 수동 조회를 막지 않는다.
 
 ## Frontend
 
@@ -143,6 +144,13 @@ project secret과 database password는 Worker에서 `[REDACTED]`로 바뀐 뒤�
 redaction 값을 준비하지 못하면 원문을 반환하지 않으며, 응답은 메모리에서만 처리하고 저장하지 않는다.
 line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
 `503 SERVICE_LOG_REDACTION_UNAVAILABLE`로 fail closed 한다.
+
+`GET /api/deployments/{deploymentId}/service-logs/stream?service={serviceName}`은 같은 검증·redaction
+경계를 사용해 최근 200줄부터 `docker logs --follow`의 새 출력을 SSE로 전달한다. 브라우저가
+끊어지면 자동 재연결하며 새 session의 tail 200으로 화면 buffer를 교체한다. service 전환, HTTP
+disconnect, Worker 종료와 container log 종료 시 해당 Docker follow process를 정리한다. line은
+16KiB, 화면 buffer는 200줄로 제한하고 raw·redacted log 모두 저장하지 않는다. 기존 `새로고침`은
+snapshot fallback으로 유지한다.
 
 다음 배포에서 project gateway가 정지 상태면 Worker는 managed·project·gateway label과 실제
 running 상태를 함께 확인한다. exact managed gateway만 저장된 Preview 포트와 기존 active

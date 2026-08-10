@@ -24,6 +24,9 @@ from heimdall.runtime.logs import (
     ServiceLogLine,
     ServiceLogSnapshot,
     ServiceLogStream,
+    ServiceLogStreamEnd,
+    ServiceLogStreamLine,
+    ServiceLogStreamReady,
 )
 from heimdall.runtime.models import (
     RuntimeConfigurationError,
@@ -32,6 +35,12 @@ from heimdall.runtime.models import (
     RuntimeService,
 )
 from heimdall.runtime.process import CommandExecutionError, CommandResult, CommandRunner
+from heimdall.runtime.process_stream import (
+    CommandLineStream,
+    CommandOutputStream,
+    CommandStreamEnded,
+    CommandStreamRunner,
+)
 from heimdall.secrets.store import SecretStore, SecretStoreError
 
 
@@ -577,7 +586,15 @@ class DockerRuntime:
             return CommandResult(-1, "")
 
 
-class DockerServiceLogReader:
+@dataclass(frozen=True, slots=True)
+class _ServiceLogTarget:
+    services: tuple[str, ...]
+    service: RuntimeService
+    redactions: tuple[str, ...]
+    container_id: str
+
+
+class _DockerServiceLogAccess:
     def __init__(
         self,
         runner: CommandRunner,
@@ -593,7 +610,7 @@ class DockerServiceLogReader:
         self._executable = executable
         self._command_timeout_seconds = command_timeout_seconds
 
-    def read(self, deployment: Deployment, service_name: str | None) -> ServiceLogSnapshot:
+    def _resolve(self, deployment: Deployment, service_name: str | None) -> _ServiceLogTarget:
         try:
             runtime = RuntimeDeployment.from_deployment(deployment)
         except RuntimeConfigurationError as error:
@@ -628,19 +645,7 @@ class DockerServiceLogReader:
         if container_id is None:
             raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE")
 
-        result = self._run(["logs", "--tail", str(SERVICE_LOG_TAIL), "--timestamps", container_id])
-        if result.returncode != 0:
-            raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE")
-
-        lines, truncated = _service_log_lines(result, redactions)
-        return ServiceLogSnapshot(
-            deployment_id=deployment.id,
-            services=services,
-            service_name=selected.name,
-            retrieved_at=datetime.now(UTC),
-            lines=lines,
-            truncated=truncated,
-        )
+        return _ServiceLogTarget(services, selected, redactions, container_id)
 
     def _redactions(
         self,
@@ -681,6 +686,140 @@ class DockerServiceLogReader:
             )
         except (CommandExecutionError, subprocess.TimeoutExpired) as error:
             raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
+
+
+class DockerServiceLogReader(_DockerServiceLogAccess):
+    def read(self, deployment: Deployment, service_name: str | None) -> ServiceLogSnapshot:
+        target = self._resolve(deployment, service_name)
+
+        result = self._run(
+            ["logs", "--tail", str(SERVICE_LOG_TAIL), "--timestamps", target.container_id]
+        )
+        if result.returncode != 0:
+            raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE")
+
+        lines, truncated = _service_log_lines(result, target.redactions)
+        return ServiceLogSnapshot(
+            deployment_id=deployment.id,
+            services=target.services,
+            service_name=target.service.name,
+            retrieved_at=datetime.now(UTC),
+            lines=lines,
+            truncated=truncated,
+        )
+
+
+class DockerServiceLogStreamer(_DockerServiceLogAccess):
+    def __init__(
+        self,
+        runner: CommandRunner,
+        stream_runner: CommandStreamRunner,
+        secret_store: SecretStore,
+        *,
+        executable: str = "docker",
+        command_timeout_seconds: float = 5,
+    ) -> None:
+        super().__init__(
+            runner,
+            secret_store,
+            executable=executable,
+            command_timeout_seconds=command_timeout_seconds,
+        )
+        self._stream_runner = stream_runner
+
+    def open(
+        self,
+        deployment: Deployment,
+        service_name: str | None,
+    ) -> DockerServiceLogSubscription:
+        target = self._resolve(deployment, service_name)
+        redaction_bytes = tuple(value.encode("utf-8") for value in target.redactions)
+        raw_line_limit = (
+            SERVICE_LOG_MAX_LINE_BYTES
+            + max((len(value) for value in redaction_bytes), default=0)
+            + 128
+        )
+        try:
+            stream = self._stream_runner.open(
+                [
+                    self._executable,
+                    "logs",
+                    "--tail",
+                    str(SERVICE_LOG_TAIL),
+                    "--follow",
+                    "--timestamps",
+                    target.container_id,
+                ],
+                max_line_bytes=raw_line_limit,
+            )
+        except (CommandExecutionError, OSError, ValueError) as error:
+            raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
+        return DockerServiceLogSubscription(
+            ServiceLogStreamReady(
+                deployment_id=deployment.id,
+                services=target.services,
+                service_name=target.service.name,
+                connected_at=datetime.now(UTC),
+            ),
+            stream,
+            redaction_bytes,
+        )
+
+
+class DockerServiceLogSubscription:
+    def __init__(
+        self,
+        ready: ServiceLogStreamReady,
+        stream: CommandLineStream,
+        redactions: tuple[bytes, ...],
+    ) -> None:
+        self.ready = ready
+        self._stream = stream
+        self._redactions = redactions
+
+    def receive(self, timeout_seconds: float) -> ServiceLogStreamLine | ServiceLogStreamEnd | None:
+        while True:
+            try:
+                output = self._stream.receive(timeout_seconds)
+            except CommandStreamEnded as ended:
+                if ended.returncode != 0:
+                    raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from ended
+                return ServiceLogStreamEnd()
+            if output is None:
+                return None
+            timestamp, separator, message = output.payload.partition(b" ")
+            try:
+                decoded_timestamp = timestamp.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            if not separator or _DOCKER_TIMESTAMP.fullmatch(decoded_timestamp) is None:
+                continue
+            for value in self._redactions:
+                message = message.replace(value, b"[REDACTED]")
+            bounded = message[:SERVICE_LOG_MAX_LINE_BYTES]
+            decoded_message, decode_truncated = _bounded_utf8(
+                bounded.decode("utf-8", errors="replace"),
+                SERVICE_LOG_MAX_LINE_BYTES,
+            )
+            return ServiceLogStreamLine(
+                line=ServiceLogLine(
+                    timestamp=decoded_timestamp,
+                    stream=(
+                        ServiceLogStream.STDOUT
+                        if output.stream is CommandOutputStream.STDOUT
+                        else ServiceLogStream.STDERR
+                    ),
+                    message=decoded_message,
+                ),
+                truncated=(
+                    output.truncated
+                    or len(message) > SERVICE_LOG_MAX_LINE_BYTES
+                    or decode_truncated
+                ),
+            )
+
+    def close(self) -> None:
+        self._stream.close()
 
 
 _DOCKER_TIMESTAMP = re.compile(

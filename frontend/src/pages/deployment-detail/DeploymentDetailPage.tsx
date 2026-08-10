@@ -1,13 +1,13 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
 import {
   deploymentEventsQuery,
-  deploymentKeys,
   deploymentQuery,
   deploymentServiceLogsQuery,
 } from '@/entities/deployment/queries';
+import { subscribeServiceLogs } from '@/entities/deployment/api';
 import {
   deploymentStatusLabels as statusLabels,
   deploymentStatusTone,
@@ -17,7 +17,7 @@ import type {
   Deployment,
   DeploymentEvent,
   DeploymentStatus,
-  ServiceLogSnapshot,
+  ServiceLogStreamLine,
 } from '@/entities/deployment/types';
 import { RuntimeReconciliationPanel } from '@/features/reconcile-runtime/RuntimeReconciliationPanel';
 import { ApiError } from '@/shared/api/client';
@@ -180,21 +180,113 @@ const serviceLogErrors: Record<string, string> = {
   SERVICE_LOG_REDACTION_UNAVAILABLE:
     '민감정보 마스킹을 준비하지 못해 로그 원문을 표시하지 않았습니다.',
   SERVICE_LOG_SERVICE_NOT_FOUND: '배포 snapshot에 포함된 서비스를 다시 선택해주세요.',
+  RUNTIME_LOG_STREAM_BUSY:
+    '실시간 로그 연결 한도에 도달했습니다. 잠시 뒤 다시 연결하거나 새로고침을 사용해주세요.',
+  RUNTIME_LOG_STREAM_UNAVAILABLE:
+    'Worker 실시간 로그 연결을 사용할 수 없습니다. 자동 재연결을 기다리거나 새로고침을 사용해주세요.',
 };
+
+type ServiceLogConnection = 'CONNECTING' | 'LIVE' | 'RECONNECTING' | 'ENDED' | 'ERROR';
+
+const serviceLogConnectionLabels: Record<ServiceLogConnection, string> = {
+  CONNECTING: '연결 중',
+  LIVE: '실시간 연결',
+  RECONNECTING: '재연결 중',
+  ENDED: '스트림 종료',
+  ERROR: '연결 오류',
+};
+
+interface LiveServiceLogs {
+  status: ServiceLogConnection;
+  services: string[];
+  serviceName: string;
+  connectedAt: string | null;
+  lines: ServiceLogStreamLine[];
+  truncated: boolean;
+  errorCode: string | null;
+}
 
 function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
   const [serviceName, setServiceName] = useState<string>();
-  const queryClient = useQueryClient();
-  const logs = useQuery(deploymentServiceLogsQuery(deploymentId, serviceName));
-  const snapshot = logs.data;
-  const rootSnapshot = queryClient.getQueryData<ServiceLogSnapshot>(
-    deploymentKeys.serviceLogs(deploymentId),
-  );
-  const services = snapshot?.services ?? rootSnapshot?.services ?? [];
+  const [live, setLive] = useState<LiveServiceLogs>({
+    status: 'CONNECTING',
+    services: [],
+    serviceName: '',
+    connectedAt: null,
+    lines: [],
+    truncated: false,
+    errorCode: null,
+  });
+  const snapshot = useQuery({
+    ...deploymentServiceLogsQuery(deploymentId, serviceName),
+    enabled: false,
+  });
 
-  const selectedService = serviceName ?? snapshot?.serviceName ?? services[0] ?? '';
-  const errorCode = logs.error instanceof ApiError ? logs.error.code : 'REQUEST_FAILED';
-  const errorMessage = serviceLogErrors[errorCode] ?? '서비스 로그를 불러오지 못했습니다.';
+  useEffect(() => {
+    return subscribeServiceLogs(deploymentId, serviceName, {
+      onOpen: () =>
+        setLive((current) =>
+          current.status === 'RECONNECTING' ? current : { ...current, status: 'CONNECTING' },
+        ),
+      onReady: (event) =>
+        setLive({
+          status: 'LIVE',
+          services: event.services,
+          serviceName: event.serviceName,
+          connectedAt: event.connectedAt,
+          lines: [],
+          truncated: false,
+          errorCode: null,
+        }),
+      onLine: (event) =>
+        setLive((current) => {
+          const appended = [...current.lines, event];
+          const overflow = appended.length > 200;
+          return {
+            ...current,
+            status: 'LIVE',
+            lines: overflow ? appended.slice(-200) : appended,
+            truncated: current.truncated || event.truncated || overflow,
+          };
+        }),
+      onEnd: () => setLive((current) => ({ ...current, status: 'ENDED' })),
+      onStreamError: (code) =>
+        setLive((current) => ({ ...current, status: 'ERROR', errorCode: code })),
+      onConnectionError: () =>
+        setLive((current) =>
+          current.status === 'ERROR' || current.status === 'ENDED'
+            ? current
+            : { ...current, status: 'RECONNECTING' },
+        ),
+    });
+  }, [deploymentId, serviceName]);
+
+  const services = live.services;
+  const selectedService = serviceName ?? live.serviceName ?? services[0] ?? '';
+  const snapshotErrorCode =
+    snapshot.error instanceof ApiError
+      ? snapshot.error.code
+      : snapshot.isError
+        ? 'REQUEST_FAILED'
+        : null;
+  const errorCode = live.errorCode ?? snapshotErrorCode;
+  const errorMessage = errorCode
+    ? (serviceLogErrors[errorCode] ?? '서비스 로그를 불러오지 못했습니다.')
+    : null;
+
+  async function refreshSnapshot() {
+    const result = await snapshot.refetch();
+    if (!result.data) return;
+    setLive((current) => ({
+      ...current,
+      services: result.data.services,
+      serviceName: result.data.serviceName,
+      connectedAt: result.data.retrievedAt,
+      lines: result.data.lines.map((line) => ({ ...line, truncated: false })),
+      truncated: result.data.truncated,
+      errorCode: null,
+    }));
+  }
 
   return (
     <section className="panel service-log-panel">
@@ -202,7 +294,7 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         <div>
           <span className="eyebrow">Application output</span>
           <h2>서비스 로그</h2>
-          <p>선택한 컨테이너의 stdout·stderr 최근 200줄을 조회 시점 기준으로 보여줍니다.</p>
+          <p>선택한 컨테이너의 최근 200줄과 새 stdout·stderr 출력을 실시간으로 보여줍니다.</p>
         </div>
         <div className="service-log-controls">
           <label>
@@ -211,7 +303,18 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
               aria-label="로그 서비스 선택"
               value={selectedService}
               disabled={services.length === 0}
-              onChange={(event) => setServiceName(event.target.value)}
+              onChange={(event) => {
+                const nextService = event.target.value;
+                setLive((current) => ({
+                  ...current,
+                  status: 'CONNECTING',
+                  serviceName: nextService,
+                  lines: [],
+                  truncated: false,
+                  errorCode: null,
+                }));
+                setServiceName(nextService);
+              }}
             >
               {services.length === 0 ? <option value="">서비스 확인 중</option> : null}
               {services.map((service) => (
@@ -224,10 +327,10 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
           <button
             type="button"
             className="button secondary service-log-refresh"
-            disabled={logs.isFetching}
-            onClick={() => void logs.refetch()}
+            disabled={snapshot.isFetching}
+            onClick={() => void refreshSnapshot()}
           >
-            <Icon name="refresh" /> {logs.isFetching ? '조회 중' : '새로고침'}
+            <Icon name="refresh" /> {snapshot.isFetching ? '조회 중' : '새로고침'}
           </button>
         </div>
       </div>
@@ -236,17 +339,32 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         <Icon name="shield" />
         <p>
           Heimdall이 아는 secret은 마스킹하지만 애플리케이션 로그에는 알 수 없는 개인정보나 인증
-          정보가 포함될 수 있습니다. 이 snapshot은 저장하지 않습니다.
+          정보가 포함될 수 있습니다. 이 실시간 로그와 snapshot은 저장하지 않습니다.
         </p>
       </div>
 
-      {snapshot && !logs.isError ? (
-        <div className="service-log-meta">
-          <span>
-            <strong>{snapshot.serviceName}</strong> · {snapshot.lines.length} lines
-            {snapshot.truncated ? ' · 일부 생략됨' : ''}
+      <div className="service-log-meta">
+        <span>
+          <span className={`service-log-connection ${live.status.toLowerCase()}`}>
+            {serviceLogConnectionLabels[live.status]}
           </span>
-          <time dateTime={snapshot.retrievedAt}>조회 {formatDate(snapshot.retrievedAt)}</time>
+          {live.serviceName ? (
+            <>
+              {' '}
+              <strong>{live.serviceName}</strong> · {live.lines.length} lines
+              {live.truncated ? ' · 일부 생략됨' : ''}
+            </>
+          ) : null}
+        </span>
+        {live.connectedAt ? (
+          <time dateTime={live.connectedAt}>기준 {formatDate(live.connectedAt)}</time>
+        ) : null}
+      </div>
+
+      {errorCode && errorMessage ? (
+        <div className="service-log-inline-error" role="alert">
+          <strong>{errorMessage}</strong>
+          <small>{errorCode}</small>
         </div>
       ) : null}
 
@@ -254,24 +372,29 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         className="service-log-output"
         role="log"
         aria-label="서비스 컨테이너 로그"
-        aria-live="polite"
-        aria-busy={logs.isFetching}
+        aria-live="off"
+        aria-busy={live.status === 'CONNECTING' || snapshot.isFetching}
       >
-        {logs.isLoading ? (
-          <p className="service-log-empty">서비스 로그를 조회하는 중입니다.</p>
+        {live.status === 'CONNECTING' && live.lines.length === 0 ? (
+          <p className="service-log-empty">실시간 서비스 로그에 연결하는 중입니다.</p>
         ) : null}
-        {logs.isError ? (
-          <div className="service-log-empty service-log-error">
-            <strong>{errorMessage}</strong>
-            <small>{errorCode}</small>
-          </div>
+        {live.status === 'RECONNECTING' && live.lines.length === 0 ? (
+          <p className="service-log-empty">연결이 끊겨 자동으로 다시 연결하는 중입니다.</p>
         ) : null}
-        {snapshot && snapshot.lines.length === 0 && !logs.isError ? (
-          <p className="service-log-empty">아직 출력된 서비스 로그가 없습니다.</p>
+        {live.status === 'ENDED' && live.lines.length === 0 ? (
+          <p className="service-log-empty">컨테이너 로그 스트림이 종료되었습니다.</p>
         ) : null}
-        {snapshot && snapshot.lines.length > 0 && !logs.isError ? (
+        {live.status === 'ERROR' && live.lines.length === 0 ? (
+          <p className="service-log-empty">
+            새로고침으로 마지막 snapshot을 다시 조회할 수 있습니다.
+          </p>
+        ) : null}
+        {live.status === 'LIVE' && live.lines.length === 0 ? (
+          <p className="service-log-empty">연결되었습니다. 아직 출력된 서비스 로그가 없습니다.</p>
+        ) : null}
+        {live.lines.length > 0 ? (
           <ol>
-            {snapshot.lines.map((line, index) => (
+            {live.lines.map((line, index) => (
               <li key={`${line.timestamp}-${line.stream}-${index}`}>
                 <time dateTime={line.timestamp}>{formatEventTime(line.timestamp)}</time>
                 <span className={`service-log-stream ${line.stream.toLowerCase()}`}>

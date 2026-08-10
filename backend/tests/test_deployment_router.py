@@ -5,7 +5,43 @@ from fastapi.testclient import TestClient
 from test_runtime_models import runtime_deployment
 
 from heimdall.deployments.router import router
-from heimdall.runtime.logs import ServiceLogLine, ServiceLogSnapshot, ServiceLogStream
+from heimdall.runtime.logs import (
+    ServiceLogLine,
+    ServiceLogSnapshot,
+    ServiceLogStream,
+    ServiceLogStreamEnd,
+    ServiceLogStreamLine,
+    ServiceLogStreamReady,
+)
+
+
+class LogSubscription:
+    def __init__(self, deployment_id) -> None:
+        self.ready = ServiceLogStreamReady(
+            deployment_id,
+            ("web", "api"),
+            "api",
+            datetime(2026, 8, 10, 1, tzinfo=UTC),
+        )
+        self.events = [
+            None,
+            ServiceLogStreamLine(
+                ServiceLogLine(
+                    "2026-08-10T01:00:01.000000000Z",
+                    ServiceLogStream.STDERR,
+                    "warning",
+                ),
+                False,
+            ),
+            ServiceLogStreamEnd(),
+        ]
+        self.closed = False
+
+    def receive(self):
+        return self.events.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DeploymentCatalog:
@@ -30,6 +66,11 @@ class DeploymentCatalog:
             ),
             truncated=False,
         )
+
+    def open_service_log_stream(self, deployment_id, service_name):
+        assert service_name == "api"
+        self.subscription = LogSubscription(deployment_id)
+        return self.subscription
 
 
 def test_global_deployments_returns_existing_public_dto() -> None:
@@ -96,6 +137,43 @@ def test_service_logs_reject_noncanonical_service_name_before_the_service_layer(
 
     response = TestClient(app).get(
         f"/api/deployments/{catalog.item.id}/service-logs?service=Invalid_Name"
+    )
+
+    assert response.status_code == 422
+
+
+def test_service_log_stream_returns_sse_contract_and_closes_subscription() -> None:
+    app = FastAPI()
+    catalog = DeploymentCatalog()
+    app.state.deployments = catalog
+    app.include_router(router, prefix="/api")
+
+    response = TestClient(app).get(
+        f"/api/deployments/{catalog.item.id}/service-logs/stream?service=api",
+        headers={"Accept": "text/event-stream"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert "event: ready" in response.text
+    assert '"serviceName":"api"' in response.text
+    assert ": keepalive" in response.text
+    assert "event: log" in response.text
+    assert '"stream":"STDERR"' in response.text
+    assert "event: end" in response.text
+    assert catalog.subscription.closed is True
+
+
+def test_service_log_stream_rejects_noncanonical_service_name() -> None:
+    app = FastAPI()
+    catalog = DeploymentCatalog()
+    app.state.deployments = catalog
+    app.include_router(router, prefix="/api")
+
+    response = TestClient(app).get(
+        f"/api/deployments/{catalog.item.id}/service-logs/stream?service=Invalid_Name"
     )
 
     assert response.status_code == 422

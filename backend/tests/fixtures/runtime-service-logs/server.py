@@ -10,6 +10,9 @@ print(f"stderr-secret={secret}", file=sys.stderr, flush=True)
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path == "/emit":
+            print(f"live-stdout-secret={secret}", flush=True)
+            print(f"live-stderr-secret={secret}", file=sys.stderr, flush=True)
         body = b"healthy\n"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")

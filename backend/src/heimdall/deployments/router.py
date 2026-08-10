@@ -2,7 +2,9 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 
+from heimdall.deployments.log_stream import service_log_sse_events
 from heimdall.deployments.schemas import (
     DeploymentCreate,
     DeploymentEventList,
@@ -79,3 +81,30 @@ def get_service_logs(
 ) -> ServiceLogRead:
     response.headers["Cache-Control"] = "no-store"
     return ServiceLogRead.from_snapshot(service(request).service_logs(deployment_id, service_name))
+
+
+@router.get("/deployments/{deployment_id}/service-logs/stream")
+def stream_service_logs(
+    deployment_id: UUID,
+    request: Request,
+    service_name: Annotated[
+        str | None,
+        Query(
+            alias="service",
+            min_length=1,
+            max_length=32,
+            pattern=r"^[a-z][a-z0-9-]{0,31}$",
+        ),
+    ] = None,
+) -> StreamingResponse:
+    subscription = service(request).open_service_log_stream(deployment_id, service_name)
+
+    return StreamingResponse(
+        service_log_sse_events(subscription),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

@@ -47,6 +47,17 @@ export interface ServiceLogSnapshot {
   truncated: boolean;
 }
 
+export interface ServiceLogStreamReady {
+  deploymentId: string;
+  services: string[];
+  serviceName: string;
+  connectedAt: string;
+}
+
+export interface ServiceLogStreamLine extends ServiceLogLine {
+  truncated: boolean;
+}
+
 export type RuntimeReconciliationAction = 'RECONCILE' | 'FORCE_CLEANUP';
 
 export interface RuntimeReconciliation {

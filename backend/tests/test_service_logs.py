@@ -6,9 +6,20 @@ import sys
 import pytest
 from test_runtime_models import runtime_deployment
 
-from heimdall.runtime.docker import DockerServiceLogReader
-from heimdall.runtime.logs import SERVICE_LOG_MAX_LINE_BYTES, SERVICE_LOG_TAIL, ServiceLogError
+from heimdall.runtime.docker import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.logs import (
+    SERVICE_LOG_MAX_LINE_BYTES,
+    SERVICE_LOG_TAIL,
+    ServiceLogError,
+    ServiceLogStreamEnd,
+    ServiceLogStreamLine,
+)
 from heimdall.runtime.process import CommandResult, SubprocessCommandRunner
+from heimdall.runtime.process_stream import (
+    CommandOutputLine,
+    CommandOutputStream,
+    CommandStreamEnded,
+)
 from heimdall.secrets.store import SecretStoreError
 
 
@@ -62,6 +73,32 @@ class LogSecrets:
 
     def resolve(self, reference, fingerprint):
         raise NotImplementedError
+
+
+class LogLineStream:
+    def __init__(self, items, *, returncode: int = 0) -> None:
+        self.items = list(items)
+        self.returncode = returncode
+        self.closed = False
+
+    def receive(self, timeout_seconds: float):
+        assert timeout_seconds > 0
+        if self.items:
+            return self.items.pop(0)
+        raise CommandStreamEnded(self.returncode)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class LogStreamRunner:
+    def __init__(self, stream: LogLineStream) -> None:
+        self.stream = stream
+        self.calls = []
+
+    def open(self, arguments, *, max_line_bytes: int):
+        self.calls.append((list(arguments), max_line_bytes))
+        return self.stream
 
 
 def _secrets(item) -> LogSecrets:
@@ -192,6 +229,141 @@ def test_service_logs_bound_line_length_and_tail_count() -> None:
         SERVICE_LOG_MAX_LINE_BYTES
     )
     assert snapshot.truncated is True
+
+
+def test_service_log_stream_follows_immutable_container_and_redacts_each_line() -> None:
+    item = runtime_deployment()
+    inspect_runner = LogRunner(
+        project_id=str(item.project_id),
+        deployment_id=str(item.id),
+    )
+    command_stream = LogLineStream(
+        [
+            CommandOutputLine(
+                CommandOutputStream.STDOUT,
+                b"2026-08-07T01:00:00.000000000Z project-secret-canary ready",
+                False,
+            ),
+            CommandOutputLine(
+                CommandOutputStream.STDERR,
+                b"2026-08-07T01:00:01.000000000Z database-secret-canary warning",
+                False,
+            ),
+        ]
+    )
+    stream_runner = LogStreamRunner(command_stream)
+
+    subscription = DockerServiceLogStreamer(
+        inspect_runner,
+        stream_runner,
+        _secrets(item),
+    ).open(item, "api")
+
+    first = subscription.receive(1)
+    second = subscription.receive(1)
+    ended = subscription.receive(1)
+    subscription.close()
+
+    assert subscription.ready.service_name == "api"
+    assert isinstance(first, ServiceLogStreamLine)
+    assert isinstance(second, ServiceLogStreamLine)
+    assert first.line.message == "[REDACTED] ready"
+    assert second.line.message == "[REDACTED] warning"
+    assert first.line.stream == "STDOUT"
+    assert second.line.stream == "STDERR"
+    assert isinstance(ended, ServiceLogStreamEnd)
+    assert command_stream.closed is True
+    assert stream_runner.calls == [
+        (
+            [
+                "docker",
+                "logs",
+                "--tail",
+                "200",
+                "--follow",
+                "--timestamps",
+                "f" * 64,
+            ],
+            SERVICE_LOG_MAX_LINE_BYTES + len(b"database-secret-canary") + 128,
+        )
+    ]
+
+
+def test_service_log_stream_bounds_redacted_output_and_marks_truncation() -> None:
+    item = runtime_deployment()
+    inspect_runner = LogRunner(
+        project_id=str(item.project_id),
+        deployment_id=str(item.id),
+    )
+    command_stream = LogLineStream(
+        [
+            CommandOutputLine(
+                CommandOutputStream.STDOUT,
+                b"2026-08-07T01:00:00.000000000Z " + b"x" * (SERVICE_LOG_MAX_LINE_BYTES + 10),
+                True,
+            )
+        ]
+    )
+    subscription = DockerServiceLogStreamer(
+        inspect_runner,
+        LogStreamRunner(command_stream),
+        _secrets(item),
+    ).open(item, "api")
+
+    event = subscription.receive(1)
+    subscription.close()
+
+    assert isinstance(event, ServiceLogStreamLine)
+    assert len(event.line.message.encode("utf-8")) == SERVICE_LOG_MAX_LINE_BYTES
+    assert event.truncated is True
+
+
+def test_service_log_stream_keeps_invalid_utf8_replacement_within_byte_limit() -> None:
+    item = runtime_deployment()
+    inspect_runner = LogRunner(
+        project_id=str(item.project_id),
+        deployment_id=str(item.id),
+    )
+    command_stream = LogLineStream(
+        [
+            CommandOutputLine(
+                CommandOutputStream.STDOUT,
+                b"2026-08-07T01:00:00.000000000Z " + b"\xff" * SERVICE_LOG_MAX_LINE_BYTES,
+                False,
+            )
+        ]
+    )
+    subscription = DockerServiceLogStreamer(
+        inspect_runner,
+        LogStreamRunner(command_stream),
+        _secrets(item),
+    ).open(item, "api")
+
+    event = subscription.receive(1)
+    subscription.close()
+
+    assert isinstance(event, ServiceLogStreamLine)
+    assert len(event.line.message.encode("utf-8")) <= SERVICE_LOG_MAX_LINE_BYTES
+    assert event.truncated is True
+
+
+def test_service_log_stream_maps_nonzero_follow_exit_to_stable_error() -> None:
+    item = runtime_deployment()
+    inspect_runner = LogRunner(
+        project_id=str(item.project_id),
+        deployment_id=str(item.id),
+    )
+    subscription = DockerServiceLogStreamer(
+        inspect_runner,
+        LogStreamRunner(LogLineStream([], returncode=1)),
+        _secrets(item),
+    ).open(item, "api")
+
+    with pytest.raises(ServiceLogError) as raised:
+        subscription.receive(1)
+    subscription.close()
+
+    assert raised.value.code == "SERVICE_LOGS_UNAVAILABLE"
 
 
 def test_command_runner_captures_stdout_and_stderr_separately() -> None:

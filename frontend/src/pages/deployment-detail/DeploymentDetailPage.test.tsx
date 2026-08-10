@@ -4,7 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getDeployment, getServiceLogs, listDeploymentEvents } from '@/entities/deployment/api';
+import {
+  getDeployment,
+  getServiceLogs,
+  listDeploymentEvents,
+  subscribeServiceLogs,
+} from '@/entities/deployment/api';
+import type { ServiceLogStreamHandlers } from '@/entities/deployment/api';
 import type { Deployment, DeploymentEvent, ServiceLogSnapshot } from '@/entities/deployment/types';
 import { ApiError } from '@/shared/api/client';
 
@@ -14,6 +20,7 @@ vi.mock('@/entities/deployment/api', () => ({
   getDeployment: vi.fn(),
   getServiceLogs: vi.fn(),
   listDeploymentEvents: vi.fn(),
+  subscribeServiceLogs: vi.fn(),
 }));
 
 const deployment: Deployment = {
@@ -85,10 +92,39 @@ function renderPage() {
 }
 
 describe('DeploymentDetailPage', () => {
+  let latestStreamHandlers: ServiceLogStreamHandlers | null;
+
   beforeEach(() => {
+    latestStreamHandlers = null;
     vi.mocked(getDeployment).mockResolvedValue(deployment);
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: events });
     vi.mocked(getServiceLogs).mockResolvedValue(serviceLogs);
+    vi.mocked(subscribeServiceLogs).mockImplementation((_, requestedService, handlers) => {
+      latestStreamHandlers = handlers;
+      const selectedService = requestedService ?? 'web';
+      handlers.onOpen();
+      handlers.onReady({
+        deploymentId: deployment.id,
+        services: ['web', 'api'],
+        serviceName: selectedService,
+        connectedAt: '2026-08-06T03:01:30Z',
+      });
+      handlers.onLine({
+        timestamp: '2026-08-06T03:01:20.000000000Z',
+        stream: 'STDOUT',
+        message: selectedService === 'api' ? 'api ready' : longLogLine,
+        truncated: false,
+      });
+      if (selectedService === 'web') {
+        handlers.onLine({
+          timestamp: '2026-08-06T03:01:21.000000000Z',
+          stream: 'STDERR',
+          message: 'upstream retry',
+          truncated: false,
+        });
+      }
+      return vi.fn();
+    });
   });
 
   afterEach(() => {
@@ -143,7 +179,8 @@ describe('DeploymentDetailPage', () => {
     expect(screen.getByText('서비스 상태 확인').closest('li')).toHaveClass('failed');
   });
 
-  it('shows a manually refreshed service log snapshot with stream separation', async () => {
+  it('shows live service logs with stream separation and keeps snapshot refresh as fallback', async () => {
+    const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByRole('heading', { name: '서비스 로그' })).toBeInTheDocument();
@@ -151,11 +188,17 @@ describe('DeploymentDetailPage', () => {
     expect(within(log).getByText('STDOUT')).toBeInTheDocument();
     expect(within(log).getByText('STDERR')).toBeInTheDocument();
     expect(within(log).getByText(longLogLine)).toBeInTheDocument();
-    expect(screen.getByRole('note')).toHaveTextContent('이 snapshot은 저장하지 않습니다');
+    expect(screen.getByText('실시간 연결')).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent(
+      '이 실시간 로그와 snapshot은 저장하지 않습니다',
+    );
+    expect(getServiceLogs).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, undefined);
   });
 
-  it('switches services and refreshes only when the operator requests it', async () => {
+  it('switches the live stream and refreshes the snapshot only when requested', async () => {
     const user = userEvent.setup();
     vi.mocked(getServiceLogs).mockImplementation(async (_, serviceName) =>
       serviceName === 'api'
@@ -179,10 +222,11 @@ describe('DeploymentDetailPage', () => {
     await user.selectOptions(selector, 'api');
 
     expect(await screen.findByText('api ready')).toBeInTheDocument();
-    expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, 'api');
+    expect(subscribeServiceLogs).toHaveBeenLastCalledWith(deployment.id, 'api', expect.any(Object));
+    expect(getServiceLogs).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: '새로고침' }));
-    await waitFor(() => expect(getServiceLogs).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, 'api'));
   });
 
   it('explains when logs are withheld because redaction is unavailable', async () => {
@@ -191,9 +235,36 @@ describe('DeploymentDetailPage', () => {
     );
     renderPage();
 
+    await screen.findByText(longLogLine);
+    await userEvent.setup().click(screen.getByRole('button', { name: '새로고침' }));
+
     expect(
       await screen.findByText('민감정보 마스킹을 준비하지 못해 로그 원문을 표시하지 않았습니다.'),
     ).toBeInTheDocument();
     expect(screen.getByText('SERVICE_LOG_REDACTION_UNAVAILABLE')).toBeInTheDocument();
+  });
+
+  it('shows reconnecting state and replaces the buffer after the server is ready again', async () => {
+    renderPage();
+
+    expect(await screen.findByText(longLogLine)).toBeInTheDocument();
+    latestStreamHandlers?.onConnectionError();
+    expect(await screen.findByText('재연결 중')).toBeInTheDocument();
+
+    latestStreamHandlers?.onReady({
+      deploymentId: deployment.id,
+      services: ['web', 'api'],
+      serviceName: 'web',
+      connectedAt: '2026-08-06T03:02:00Z',
+    });
+    latestStreamHandlers?.onLine({
+      timestamp: '2026-08-06T03:02:01.000000000Z',
+      stream: 'STDOUT',
+      message: 'reconnected tail',
+      truncated: false,
+    });
+
+    expect(await screen.findByText('reconnected tail')).toBeInTheDocument();
+    expect(screen.queryByText(longLogLine)).not.toBeInTheDocument();
   });
 });

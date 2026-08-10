@@ -19,11 +19,30 @@ from heimdall.deployments.repository import DeploymentRepository
 from heimdall.deployments.schemas import DeploymentCreate
 from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.service import ProjectService
-from heimdall.runtime.logs import ServiceLogError, ServiceLogSnapshot
+from heimdall.runtime.logs import (
+    ServiceLogError,
+    ServiceLogSnapshot,
+    ServiceLogStreamEvent,
+    ServiceLogStreamReady,
+)
 
 
 class ServiceLogGateway(Protocol):
     def fetch(self, deployment_id: UUID, service_name: str | None) -> ServiceLogSnapshot: ...
+
+
+class ServiceLogStreamSubscription(Protocol):
+    ready: ServiceLogStreamReady
+
+    def receive(self) -> ServiceLogStreamEvent | None: ...
+
+    def close(self) -> None: ...
+
+
+class ServiceLogStreamGateway(Protocol):
+    def open(
+        self, deployment_id: UUID, service_name: str | None
+    ) -> ServiceLogStreamSubscription: ...
 
 
 _SERVICE_LOG_ERRORS = {
@@ -47,6 +66,16 @@ _SERVICE_LOG_ERRORS = {
         "SERVICE_LOG_REDACTION_UNAVAILABLE",
         "Service logs were withheld because secret redaction could not be prepared",
     ),
+    "RUNTIME_LOG_STREAM_BUSY": (
+        503,
+        "RUNTIME_LOG_STREAM_BUSY",
+        "The runtime Worker has reached the live service log connection limit",
+    ),
+    "RUNTIME_LOG_STREAM_UNAVAILABLE": (
+        503,
+        "RUNTIME_LOG_STREAM_UNAVAILABLE",
+        "The runtime Worker live log broker is unavailable",
+    ),
 }
 
 
@@ -57,11 +86,13 @@ class DeploymentService:
         projects: ProjectService,
         project_databases: ProjectDatabaseService | None = None,
         service_logs: ServiceLogGateway | None = None,
+        service_log_stream: ServiceLogStreamGateway | None = None,
     ) -> None:
         self._repository = repository
         self._projects = projects
         self._project_databases = project_databases
         self._service_logs = service_logs
+        self._service_log_stream = service_log_stream
 
     def request(self, project_id: UUID, request: DeploymentCreate) -> Deployment:
         project = self._projects.ready(project_id)
@@ -161,5 +192,26 @@ class DeploymentService:
             status, code, message = _SERVICE_LOG_ERRORS.get(
                 error.code,
                 _SERVICE_LOG_ERRORS["RUNTIME_LOG_BROKER_UNAVAILABLE"],
+            )
+            raise AppError(status, code, message) from error
+
+    def open_service_log_stream(
+        self,
+        deployment_id: UUID,
+        service_name: str | None,
+    ) -> ServiceLogStreamSubscription:
+        self.get(deployment_id)
+        if self._service_log_stream is None:
+            raise AppError(
+                503,
+                "RUNTIME_LOG_STREAM_UNAVAILABLE",
+                "The runtime Worker live log broker is unavailable",
+            )
+        try:
+            return self._service_log_stream.open(deployment_id, service_name)
+        except ServiceLogError as error:
+            status, code, message = _SERVICE_LOG_ERRORS.get(
+                error.code,
+                _SERVICE_LOG_ERRORS["RUNTIME_LOG_STREAM_UNAVAILABLE"],
             )
             raise AppError(status, code, message) from error

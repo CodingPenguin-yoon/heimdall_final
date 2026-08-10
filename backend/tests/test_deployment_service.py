@@ -47,6 +47,19 @@ class ServiceLogs:
         )
 
 
+class ServiceLogStreams:
+    def __init__(self, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.requests = []
+        self.subscription = object()
+
+    def open(self, deployment_id, service_name):
+        self.requests.append((deployment_id, service_name))
+        if self.error_code is not None:
+            raise ServiceLogError(self.error_code)
+        return self.subscription
+
+
 def ready_project() -> tuple[ProjectService, object]:
     projects = ProjectService(MemoryProjects(), FakeGit())
     project = projects.create(
@@ -148,3 +161,47 @@ def test_service_log_failures_map_to_stable_http_errors(error_code: str, status:
     assert raised.value.code == (
         error_code if error_code != "UNKNOWN_BROKER_ERROR" else "RUNTIME_LOG_BROKER_UNAVAILABLE"
     )
+
+
+def test_service_log_stream_is_opened_only_after_deployment_lookup() -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = ServiceLogStreams()
+    service = DeploymentService(repository, projects, service_log_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    subscription = service.open_service_log_stream(deployment.id, "api")
+
+    assert subscription is streams.subscription
+    assert streams.requests == [(deployment.id, "api")]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_code"),
+    [
+        ("RUNTIME_LOG_STREAM_BUSY", "RUNTIME_LOG_STREAM_BUSY"),
+        ("RUNTIME_LOG_STREAM_UNAVAILABLE", "RUNTIME_LOG_STREAM_UNAVAILABLE"),
+        ("UNKNOWN_STREAM_ERROR", "RUNTIME_LOG_STREAM_UNAVAILABLE"),
+    ],
+)
+def test_service_log_stream_failures_map_to_stable_http_errors(
+    error_code: str,
+    expected_code: str,
+) -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = ServiceLogStreams(error_code)
+    service = DeploymentService(repository, projects, service_log_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    with pytest.raises(AppError) as raised:
+        service.open_service_log_stream(deployment.id, None)
+
+    assert raised.value.status == 503
+    assert raised.value.code == expected_code

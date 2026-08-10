@@ -16,11 +16,21 @@ from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
-from heimdall.runtime.docker import DockerRuntime, DockerServiceLogReader, HttpHealthProbe
+from heimdall.runtime.docker import (
+    DockerRuntime,
+    DockerServiceLogReader,
+    DockerServiceLogStreamer,
+    HttpHealthProbe,
+)
 from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
 from heimdall.runtime.log_broker import UnixServiceLogBrokerServer, service_log_socket_path
+from heimdall.runtime.log_stream_broker import (
+    UnixServiceLogStreamBrokerServer,
+    service_log_stream_socket_path,
+)
 from heimdall.runtime.logs import ServiceLogError
 from heimdall.runtime.process import SubprocessCommandRunner
+from heimdall.runtime.process_stream import SubprocessCommandStreamRunner
 from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
 from heimdall.runtime.reconciliation_worker import RuntimeReconciliationWorker
 from heimdall.runtime.repository import PostgresRuntimeRepository
@@ -36,6 +46,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
     database = Database(app_settings.database_url)
     database.open()
     log_broker: UnixServiceLogBrokerServer | None = None
+    log_stream_broker: UnixServiceLogStreamBrokerServer | None = None
     try:
         runner = SubprocessCommandRunner(
             heartbeat_interval_seconds=max(1, app_settings.worker_lease_seconds / 3)
@@ -64,6 +75,13 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             executable=app_settings.docker_executable,
             command_timeout_seconds=app_settings.service_log_command_timeout_seconds,
         )
+        log_streamer = DockerServiceLogStreamer(
+            runner,
+            SubprocessCommandStreamRunner(),
+            secret_store,
+            executable=app_settings.docker_executable,
+            command_timeout_seconds=app_settings.service_log_command_timeout_seconds,
+        )
 
         def read_service_logs(deployment_id, service_name):
             try:
@@ -71,6 +89,13 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             except DeploymentNotFoundError as error:
                 raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
             return log_reader.read(deployment, service_name)
+
+        def stream_service_logs(deployment_id, service_name):
+            try:
+                deployment = deployments.get(deployment_id)
+            except DeploymentNotFoundError as error:
+                raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
+            return log_streamer.open(deployment, service_name)
 
         candidate_broker = UnixServiceLogBrokerServer(
             service_log_socket_path(app_settings.runtime_root),
@@ -85,6 +110,19 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             )
         else:
             log_broker = candidate_broker
+        candidate_stream_broker = UnixServiceLogStreamBrokerServer(
+            service_log_stream_socket_path(app_settings.runtime_root),
+            stream_service_logs,
+        )
+        try:
+            candidate_stream_broker.start()
+        except OSError:
+            logger.warning(
+                "service log stream broker could not start; deployment processing continues",
+                exc_info=True,
+            )
+        else:
+            log_stream_broker = candidate_stream_broker
         gateway = NginxGatewayActivator(
             runtimes,
             docker,
@@ -127,6 +165,8 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             if not reconciliation_worker.run_once():
                 stop_event.wait(app_settings.worker_poll_seconds)
     finally:
+        if log_stream_broker is not None:
+            log_stream_broker.stop()
         if log_broker is not None:
             log_broker.stop()
         database.close()
