@@ -31,9 +31,9 @@
 - multi-service는 generation network의 고유 DNS alias로 통신한다.
 - 프로젝트별 NGINX 하나가 안정 preview port를 소유한다.
 - 모든 candidate가 정상일 때만 gateway를 전환하고 실패 시 기존 preview를 유지한다.
-- exact managed label의 정지 gateway는 다음 배포에서 저장된 preview port로 복원한다. 기존 active
-  network의 last-known-good 복원과 candidate 검증 뒤 candidate network 기준으로 다시 생성·검증한
-  후에만 active metadata를 전환한다.
+- 모든 generation 전환은 candidate route를 먼저 검증하고 project gateway를 candidate network의
+  동일 preview port에 다시 생성·검증한 후에만 active metadata를 전환한다. exact managed label의
+  정지 gateway는 그 전에 기존 active network의 last-known-good 상태로 1차 복원한다.
 - Worker는 PostgreSQL claim token과 lease로 fencing하며 만료된 작업은 새 Worker가 회수한다.
 - 회수 Worker는 DB·NGINX response marker·Docker deployment label을 비교해 실제 active
   generation을 확정하고, 불확실한 candidate는 삭제하지 않으며 attempt 상한을 적용한다.

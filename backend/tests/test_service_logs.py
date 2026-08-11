@@ -6,7 +6,7 @@ import sys
 import pytest
 from test_runtime_models import runtime_deployment
 
-from heimdall.runtime.docker import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
 from heimdall.runtime.logs import (
     SERVICE_LOG_MAX_LINE_BYTES,
     SERVICE_LOG_TAIL,

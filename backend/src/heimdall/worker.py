@@ -16,13 +16,10 @@ from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
-from heimdall.runtime.docker import (
-    DockerRuntime,
-    DockerServiceLogReader,
-    DockerServiceLogStreamer,
-    HttpHealthProbe,
-)
-from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
+from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
+from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.gateway import NginxGatewayActivator
+from heimdall.runtime.gateway_probe import HttpRouteProbe
 from heimdall.runtime.log_broker import UnixServiceLogBrokerServer, service_log_socket_path
 from heimdall.runtime.log_stream_broker import (
     UnixServiceLogStreamBrokerServer,

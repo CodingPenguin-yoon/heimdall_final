@@ -23,8 +23,10 @@ from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.schemas import ProjectCreate, ProjectSettingsUpdate
 from heimdall.projects.service import ProjectService
-from heimdall.runtime.docker import DockerRuntime, DockerServiceLogReader, HttpHealthProbe
-from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
+from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
+from heimdall.runtime.docker_logs import DockerServiceLogReader
+from heimdall.runtime.gateway import NginxGatewayActivator
+from heimdall.runtime.gateway_probe import HttpRouteProbe
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
 from heimdall.runtime.repository import PostgresRuntimeRepository

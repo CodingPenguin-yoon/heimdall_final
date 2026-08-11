@@ -12,13 +12,10 @@ import pytest
 
 from heimdall.deployments.models import Deployment, DeploymentSource, DeploymentStatus
 from heimdall.deployments.worker import RecoveryDisposition
-from heimdall.runtime.docker import (
-    DockerRuntime,
-    DockerServiceLogReader,
-    DockerServiceLogStreamer,
-    HttpHealthProbe,
-)
-from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
+from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
+from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.gateway import NginxGatewayActivator
+from heimdall.runtime.gateway_probe import HttpRouteProbe
 from heimdall.runtime.logs import ServiceLogStreamLine
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
@@ -297,7 +294,7 @@ def test_service_log_stream_redacts_tail_and_follow_and_closes_cleanly(tmp_path:
     )
 
 
-def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -> None:
+def test_single_service_running_rebase_and_stopped_gateway_recovery(tmp_path: Path) -> None:
     project_id = uuid4()
     deployment_id = uuid4()
     now = datetime.now(UTC)
@@ -350,6 +347,8 @@ def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -
     cleanup_candidate = None
     cleanup_deployment = None
     cleanup_runtime = None
+    running_replacement_deployment = None
+    running_replacement_runtime = None
     replacement_deployment = None
     replacement_runtime = None
     try:
@@ -388,6 +387,33 @@ def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -
 
         stable_port = runtimes.item.preview_port
         gateway_name = runtimes.item.gateway_container_name
+        running_replacement_deployment = replace(deployment, id=uuid4())
+        running_replacement_runtime = RuntimeDeployment.from_deployment(
+            running_replacement_deployment
+        )
+        running_replacement_candidate = docker.start_candidate(
+            running_replacement_deployment,
+            running_replacement_runtime,
+            source,
+            FileSecretStore(tmp_path / "running-replacement-secrets"),
+            Progress(),
+        )
+
+        gateway.activate(
+            running_replacement_deployment,
+            running_replacement_runtime,
+            running_replacement_candidate,
+            Progress(),
+        )
+
+        assert runtimes.item.active_deployment_id == running_replacement_deployment.id
+        assert runtimes.item.preview_port == stable_port
+        with urlopen(f"http://127.0.0.1:{stable_port}/", timeout=3) as response:
+            assert response.headers["X-Heimdall-Deployment-Id"] == str(
+                running_replacement_deployment.id
+            )
+            assert response.read() == b"heimdall runtime smoke\n"
+
         runner.run(
             ["docker", "stop", gateway_name],
             timeout_seconds=30,
@@ -479,4 +505,9 @@ def test_single_service_candidate_and_stopped_gateway_recovery(tmp_path: Path) -
         )
         if replacement_deployment is not None and replacement_runtime is not None:
             docker.cleanup_candidate(replacement_deployment, replacement_runtime)
+        if running_replacement_deployment is not None and running_replacement_runtime is not None:
+            docker.cleanup_candidate(
+                running_replacement_deployment,
+                running_replacement_runtime,
+            )
         docker.cleanup_candidate(deployment, runtime)

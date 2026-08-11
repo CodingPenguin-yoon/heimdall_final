@@ -2,103 +2,25 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from http.client import RemoteDisconnected
 from pathlib import Path
-from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
-from uuid import UUID
 
 from heimdall.deployments.models import Deployment
 from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure, RuntimeProgress
 from heimdall.runtime.docker import CandidateGeneration, DockerRuntime
+from heimdall.runtime.gateway_config import default_nginx_config, render_nginx_config
+from heimdall.runtime.gateway_probe import GatewayObservation, RouteProbe
 from heimdall.runtime.models import RuntimeDeployment
 from heimdall.runtime.process import CommandExecutionError, CommandResult, CommandRunner
 from heimdall.runtime.repository import ProjectRuntime, RuntimeRepository
-
-
-class RouteProbe(Protocol):
-    def probe(
-        self,
-        url: str,
-        *,
-        timeout_seconds: float,
-        heartbeat: Callable[[], None],
-    ) -> None: ...
-
-    def observe(
-        self,
-        url: str,
-        *,
-        timeout_seconds: float,
-        heartbeat: Callable[[], None],
-    ) -> GatewayObservation: ...
-
-
-@dataclass(frozen=True, slots=True)
-class GatewayObservation:
-    reachable: bool
-    deployment_id: UUID | None
 
 
 @dataclass(frozen=True, slots=True)
 class _GatewayReadiness:
     preview_port: int
     needs_network_rebase: bool
-
-
-class HttpRouteProbe:
-    def probe(
-        self,
-        url: str,
-        *,
-        timeout_seconds: float,
-        heartbeat: Callable[[], None],
-    ) -> None:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            heartbeat()
-            try:
-                request = Request(url, method="GET")
-                with urlopen(request, timeout=min(2, timeout_seconds)) as response:
-                    if response.status < 500:
-                        return
-            except HTTPError as error:
-                if error.code < 500:
-                    return
-            except (URLError, TimeoutError, RemoteDisconnected, ConnectionError):
-                pass
-            time.sleep(0.25)
-        raise RuntimeFailure("ACTIVATION", "GATEWAY_ROUTE_PROBE_FAILED")
-
-    def observe(
-        self,
-        url: str,
-        *,
-        timeout_seconds: float,
-        heartbeat: Callable[[], None],
-    ) -> GatewayObservation:
-        heartbeat()
-        try:
-            request = Request(url, method="GET")
-            with urlopen(request, timeout=min(2, timeout_seconds)) as response:
-                marker = response.headers.get("X-Heimdall-Deployment-Id")
-        except HTTPError as error:
-            marker = error.headers.get("X-Heimdall-Deployment-Id")
-            error.close()
-        except (URLError, TimeoutError, RemoteDisconnected, ConnectionError):
-            return GatewayObservation(False, None)
-        if marker is None or marker == "none":
-            return GatewayObservation(True, None)
-        try:
-            deployment_id = UUID(marker)
-        except (ValueError, AttributeError):
-            return GatewayObservation(True, None)
-        return GatewayObservation(True, deployment_id)
 
 
 class NginxGatewayActivator:
@@ -204,7 +126,7 @@ class NginxGatewayActivator:
             )
             directory = self._gateway_directory(deployment.project_id.hex)
             _ensure_private_directory(directory)
-            active_config = _nginx_config(deployment, runtime)
+            active_config = render_nginx_config(deployment, runtime)
             _atomic_write(directory / "current.conf", active_config)
             _atomic_write(directory / "last-good.config", active_config)
             self._docker.promote_candidate(candidate)
@@ -237,8 +159,8 @@ class NginxGatewayActivator:
         candidate_path = directory / f"candidate-{deployment.id.hex}.config"
         _ensure_private_directory(directory)
         if not current_path.exists():
-            _atomic_write(current_path, _default_config())
-            _atomic_write(last_good_path, _default_config())
+            _atomic_write(current_path, default_nginx_config())
+            _atomic_write(last_good_path, default_nginx_config())
 
         readiness = self._ensure_gateway(
             deployment,
@@ -255,7 +177,7 @@ class NginxGatewayActivator:
         if stored.active_deployment_id == deployment.id:
             return
         self._connect_gateway(candidate.network_name, gateway_name, progress)
-        _atomic_write(candidate_path, _nginx_config(deployment, runtime))
+        _atomic_write(candidate_path, render_nginx_config(deployment, runtime))
         self._test_config(candidate.network_name, candidate_path, progress)
 
         previous_config = current_path.read_text(encoding="utf-8")
@@ -360,7 +282,13 @@ class NginxGatewayActivator:
             )
         else:
             running = _managed_gateway_running(inspected.stdout, deployment)
-            if not running:
+            if running:
+                needs_network_rebase = (
+                    stored is not None
+                    and stored.active_network_name is not None
+                    and stored.active_network_name != network_name
+                )
+            else:
                 if stored is not None and stored.gateway_container_name != gateway_name:
                     raise RuntimeFailure("ACTIVATION", "GATEWAY_NAME_CONFLICT")
                 self._run(
@@ -678,52 +606,6 @@ class NginxGatewayActivator:
             )
         except CommandExecutionError:
             return CommandResult(-1, "")
-
-
-def _nginx_config(deployment: Deployment, runtime: RuntimeDeployment) -> str:
-    generation = deployment.id.hex[:12]
-    locations: list[str] = []
-    for route in sorted(runtime.routes, key=lambda item: len(item.path), reverse=True):
-        service = next(item for item in runtime.services if item.name == route.service)
-        alias = f"{service.name}-g-{generation}"
-        if route.path == "/":
-            locations.append(_location("/", alias, service.internal_port))
-        else:
-            locations.append(_location(f"= {route.path}", alias, service.internal_port))
-            locations.append(_location(f"^~ {route.path}/", alias, service.internal_port))
-    return "\n".join(
-        [
-            f"# deployment: {deployment.id}",
-            "server {",
-            "    listen 8080;",
-            "    server_name _;",
-            "    proxy_hide_header X-Heimdall-Deployment-Id;",
-            f'    add_header X-Heimdall-Deployment-Id "{deployment.id}" always;',
-            *locations,
-            "}",
-            "",
-        ]
-    )
-
-
-def _location(location: str, alias: str, port: int) -> str:
-    return "\n".join(
-        [
-            f"    location {location} {{",
-            f"        proxy_pass http://{alias}:{port};",
-            "        proxy_set_header Host $host;",
-            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
-            "        proxy_set_header X-Forwarded-Proto $scheme;",
-            "    }",
-        ]
-    )
-
-
-def _default_config() -> str:
-    return (
-        'server { listen 8080; add_header X-Heimdall-Deployment-Id "none" always; '
-        "location / { return 503; } }\n"
-    )
 
 
 def _gateway_name(project_hex: str) -> str:

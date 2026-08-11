@@ -16,6 +16,7 @@ Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 �
 - exact SHA checkout과 multi-service Docker candidate
 - plain 환경변수, user secret file, Managed DB password file 주입
 - service health check와 project별 NGINX atomic activation
+- generation 전환 시 동일 Preview 포트의 candidate network 기준 NGINX gateway 재생성·재검증
 - 실패 시 last-known-good preview 보존과 candidate label cleanup
 - 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
 - durable cursor 기반 배포 event SSE, 실패 단계와 안정 preview link
@@ -163,11 +164,12 @@ disconnect, Worker 종료와 container log 종료 시 해당 Docker follow proce
 snapshot fallback으로 유지한다. 자동 스크롤 일시정지는 SSE 수집을 끊지 않으며 새 line 수를
 표시하고, `최신 로그` 버튼으로 마지막 line 이동과 자동 추적을 함께 재개한다.
 
-다음 배포에서 project gateway가 정지 상태면 Worker는 managed·project·gateway label과 실제
-running 상태를 함께 확인한다. exact managed gateway만 저장된 Preview 포트와 기존 active
-network에서 먼저 복원하고, candidate route 검증 후 candidate network를 주 네트워크로 동일
-포트에 다시 생성해 재검증한다. 이 확인이 끝난 뒤에만 DB active 전환과 이전 generation 회수를
-수행하며, 실행 중 gateway와 label이 다른 동명 container는 자동 교체하지 않는다.
+다음 배포에서 Worker는 managed·project·gateway label과 실제 running 상태를 함께 확인한다. 실행
+중 gateway는 candidate route를 먼저 검증하고 candidate network를 주 네트워크로 동일 Preview
+포트에 다시 생성해 host route를 재검증한다. exact managed gateway가 정지 상태면 그 전에 기존
+active network의 last-known-good 상태로 먼저 복원한다. 이 확인이 끝난 뒤에만 DB active 전환과
+이전 generation 회수를 수행하며, 실행 중 gateway와 label이 다른 동명 container는 자동 교체하지
+않는다.
 
 Worker가 activation 도중 종료돼 lease가 만료되면 새 Worker는 DB 기록만 믿고 candidate를
 삭제하지 않는다. Control DB의 active deployment, NGINX가 응답하는 deployment ID와 Docker
