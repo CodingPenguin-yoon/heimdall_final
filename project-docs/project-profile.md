@@ -45,10 +45,12 @@
 - project runtime은 active deployment와 host loopback stable preview port를 Control DB에 저장한다.
 - 전역 배포 활동은 기존 Deployment 공개 필드로 최근 100건을 최신순 조회하고, project 이름은 기존
   project 목록과 UI에서 결합한다. 진행 중 배포가 있을 때만 목록을 자동 갱신한다.
-- 구조화 deployment event는 raw application output 없이 Control DB에 저장한다. 별도 서비스 로그
+- 구조화 deployment event는 raw application output 없이 Control DB에 저장하고, 초기 snapshot 뒤
+  PostgreSQL LISTEN/NOTIFY wake-up과 durable event ID cursor 기반 SSE로 전달한다. 별도 서비스 로그
   snapshot과 SSE live follow는 Worker가 exact container label을 확인하고 알려진 secret을 fail-closed
   마스킹한 뒤 service당 최근 200줄 buffer로만 제공한다. snapshot과 stream capacity를 분리하고
-  disconnect 시 Docker follow를 정리하며 로그를 저장하지 않는다.
+  disconnect 시 Docker follow를 정리하며 로그를 저장하지 않는다. 로그 화면의 일시정지는 stream을
+  끊지 않고 자동 스크롤만 멈추며 새 line 수를 표시한다.
 - service별 사용자 환경변수와 project database 접근 여부를 설정한다.
 - 사용자 환경변수와 Heimdall 예약 `DATABASE_*`, `HEIMDALL_*` 값을 배포 시 합성한다.
 - project database password와 사용자 secret은 Heimdall이 관리하며 API·Control DB·deployment snapshot에 raw 값을 남기지 않는다.

@@ -2,11 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
-import {
-  deploymentEventsQuery,
-  deploymentQuery,
-  deploymentServiceLogsQuery,
-} from '@/entities/deployment/queries';
+import { deploymentQuery, deploymentServiceLogsQuery } from '@/entities/deployment/queries';
 import { subscribeServiceLogs } from '@/entities/deployment/api';
 import {
   deploymentStatusLabels as statusLabels,
@@ -19,6 +15,8 @@ import type {
   DeploymentStatus,
   ServiceLogStreamLine,
 } from '@/entities/deployment/types';
+import type { DeploymentEventConnection } from '@/entities/deployment/useDeploymentEvents';
+import { useDeploymentEvents } from '@/entities/deployment/useDeploymentEvents';
 import { RuntimeReconciliationPanel } from '@/features/reconcile-runtime/RuntimeReconciliationPanel';
 import { ApiError } from '@/shared/api/client';
 import { formatDate, shortSha } from '@/shared/lib/format';
@@ -61,6 +59,14 @@ const eventStageLabels: Record<string, string> = {
   FAILED: '배포 실패',
 };
 
+const connectionLabels: Record<DeploymentEventConnection, string> = {
+  CONNECTING: '연결 중',
+  LIVE: '실시간',
+  RECONNECTING: '재연결 중',
+  COMPLETE: '기록 완료',
+  ERROR: '연결 오류',
+};
+
 type ProgressState = 'pending' | 'current' | 'complete' | 'failed';
 
 function progressState(deployment: Deployment, step: DeploymentStatus): ProgressState {
@@ -100,11 +106,13 @@ function eventTone(stage: string): string {
 function DeploymentEventLog({
   items,
   active,
+  connection,
   loading,
   error,
 }: {
   items: DeploymentEvent[];
   active: boolean;
+  connection: DeploymentEventConnection;
   loading: boolean;
   error: boolean;
 }) {
@@ -127,7 +135,7 @@ function DeploymentEventLog({
         </div>
         <div className="deployment-log-summary">
           <span className={`deployment-log-state ${active ? 'live' : 'complete'}`}>
-            <i /> {active ? '실시간' : '기록 완료'}
+            <i /> {connectionLabels[connection]}
           </span>
           <small>{items.length} events</small>
         </div>
@@ -217,6 +225,10 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
     truncated: false,
     errorCode: null,
   });
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [pendingLines, setPendingLines] = useState(0);
+  const autoScrollRef = useRef(true);
+  const outputRef = useRef<HTMLDivElement>(null);
   const snapshot = useQuery({
     ...deploymentServiceLogsQuery(deploymentId, serviceName),
     enabled: false,
@@ -228,7 +240,8 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         setLive((current) =>
           current.status === 'RECONNECTING' ? current : { ...current, status: 'CONNECTING' },
         ),
-      onReady: (event) =>
+      onReady: (event) => {
+        setAutoScrollMode(true);
         setLive({
           status: 'LIVE',
           services: event.services,
@@ -237,8 +250,10 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
           lines: [],
           truncated: false,
           errorCode: null,
-        }),
-      onLine: (event) =>
+        });
+      },
+      onLine: (event) => {
+        if (!autoScrollRef.current) setPendingLines((current) => current + 1);
         setLive((current) => {
           const appended = [...current.lines, event];
           const overflow = appended.length > 200;
@@ -248,7 +263,8 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
             lines: overflow ? appended.slice(-200) : appended,
             truncated: current.truncated || event.truncated || overflow,
           };
-        }),
+        });
+      },
       onEnd: () => setLive((current) => ({ ...current, status: 'ENDED' })),
       onStreamError: (code) =>
         setLive((current) => ({ ...current, status: 'ERROR', errorCode: code })),
@@ -260,6 +276,12 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         ),
     });
   }, [deploymentId, serviceName]);
+
+  useEffect(() => {
+    if (!autoScrollRef.current) return;
+    const output = outputRef.current;
+    if (output) output.scrollTop = output.scrollHeight;
+  }, [live.lines.length]);
 
   const services = live.services;
   const selectedService = serviceName ?? live.serviceName ?? services[0] ?? '';
@@ -274,9 +296,30 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
     ? (serviceLogErrors[errorCode] ?? '서비스 로그를 불러오지 못했습니다.')
     : null;
 
+  function setAutoScrollMode(enabled: boolean) {
+    autoScrollRef.current = enabled;
+    setAutoScroll(enabled);
+    if (enabled) setPendingLines(0);
+  }
+
+  function moveToLatest() {
+    setAutoScrollMode(true);
+    const output = outputRef.current;
+    if (output) output.scrollTop = output.scrollHeight;
+  }
+
+  function handleLogScroll() {
+    const output = outputRef.current;
+    if (!output) return;
+    const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight <= 24;
+    if (atBottom && !autoScrollRef.current) setAutoScrollMode(true);
+    if (!atBottom && autoScrollRef.current) setAutoScrollMode(false);
+  }
+
   async function refreshSnapshot() {
     const result = await snapshot.refetch();
     if (!result.data) return;
+    setAutoScrollMode(true);
     setLive((current) => ({
       ...current,
       services: result.data.services,
@@ -305,6 +348,7 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
               disabled={services.length === 0}
               onChange={(event) => {
                 const nextService = event.target.value;
+                setAutoScrollMode(true);
                 setLive((current) => ({
                   ...current,
                   status: 'CONNECTING',
@@ -359,6 +403,20 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         {live.connectedAt ? (
           <time dateTime={live.connectedAt}>기준 {formatDate(live.connectedAt)}</time>
         ) : null}
+        <div className="service-log-follow-controls">
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => (autoScroll ? setAutoScrollMode(false) : moveToLatest())}
+          >
+            {autoScroll ? '자동 스크롤 일시정지' : '자동 스크롤 계속'}
+          </button>
+          {!autoScroll && pendingLines > 0 ? (
+            <button type="button" className="button primary" onClick={moveToLatest}>
+              최신 로그 {pendingLines}개
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {errorCode && errorMessage ? (
@@ -369,11 +427,13 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
       ) : null}
 
       <div
+        ref={outputRef}
         className="service-log-output"
         role="log"
         aria-label="서비스 컨테이너 로그"
         aria-live="off"
         aria-busy={live.status === 'CONNECTING' || snapshot.isFetching}
+        onScroll={handleLogScroll}
       >
         {live.status === 'CONNECTING' && live.lines.length === 0 ? (
           <p className="service-log-empty">실시간 서비스 로그에 연결하는 중입니다.</p>
@@ -462,7 +522,7 @@ export function DeploymentDetailPage() {
   const deploymentActive = Boolean(
     deployment.data && !isDeploymentTerminal(deployment.data.status),
   );
-  const events = useQuery(deploymentEventsQuery(deploymentId, deploymentActive));
+  const events = useDeploymentEvents(deploymentId, deploymentActive);
 
   if (deployment.isLoading) {
     return <div className="loading-page">배포 현황을 불러오는 중입니다.</div>;
@@ -559,10 +619,11 @@ export function DeploymentDetailPage() {
       </section>
 
       <DeploymentEventLog
-        items={events.data?.items ?? []}
+        items={events.items}
         active={deploymentActive}
-        loading={events.isLoading}
-        error={events.isError}
+        connection={events.connection}
+        loading={events.loading}
+        error={events.error}
       />
 
       <ServiceLogPanel deploymentId={item.id} />

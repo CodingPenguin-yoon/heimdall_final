@@ -7,6 +7,11 @@ from typing import Protocol
 from uuid import UUID
 
 from heimdall.common.errors import AppError
+from heimdall.deployments.event_stream import (
+    DeploymentEventStreamEnd,
+    DeploymentEventStreamError,
+    DeploymentEventStreamReady,
+)
 from heimdall.deployments.models import (
     ActiveDeploymentError,
     Deployment,
@@ -45,6 +50,18 @@ class ServiceLogStreamGateway(Protocol):
     ) -> ServiceLogStreamSubscription: ...
 
 
+class DeploymentEventStreamSubscription(Protocol):
+    ready: DeploymentEventStreamReady
+
+    def receive(self) -> DeploymentEvent | DeploymentEventStreamEnd | None: ...
+
+    def close(self) -> None: ...
+
+
+class DeploymentEventStreamGateway(Protocol):
+    def open(self, deployment_id: UUID, after_id: int) -> DeploymentEventStreamSubscription: ...
+
+
 _SERVICE_LOG_ERRORS = {
     "SERVICE_LOG_SERVICE_NOT_FOUND": (
         400,
@@ -78,6 +95,19 @@ _SERVICE_LOG_ERRORS = {
     ),
 }
 
+_DEPLOYMENT_EVENT_STREAM_ERRORS = {
+    "DEPLOYMENT_EVENT_STREAM_BUSY": (
+        503,
+        "DEPLOYMENT_EVENT_STREAM_BUSY",
+        "The deployment event stream connection limit has been reached",
+    ),
+    "DEPLOYMENT_EVENT_STREAM_UNAVAILABLE": (
+        503,
+        "DEPLOYMENT_EVENT_STREAM_UNAVAILABLE",
+        "The deployment event stream is unavailable",
+    ),
+}
+
 
 class DeploymentService:
     def __init__(
@@ -87,12 +117,14 @@ class DeploymentService:
         project_databases: ProjectDatabaseService | None = None,
         service_logs: ServiceLogGateway | None = None,
         service_log_stream: ServiceLogStreamGateway | None = None,
+        deployment_event_stream: DeploymentEventStreamGateway | None = None,
     ) -> None:
         self._repository = repository
         self._projects = projects
         self._project_databases = project_databases
         self._service_logs = service_logs
         self._service_log_stream = service_log_stream
+        self._deployment_event_stream = deployment_event_stream
 
     def request(self, project_id: UUID, request: DeploymentCreate) -> Deployment:
         project = self._projects.ready(project_id)
@@ -173,6 +205,27 @@ class DeploymentService:
     def events(self, deployment_id: UUID) -> Sequence[DeploymentEvent]:
         self.get(deployment_id)
         return self._repository.list_events(deployment_id)
+
+    def open_event_stream(
+        self,
+        deployment_id: UUID,
+        after_id: int,
+    ) -> DeploymentEventStreamSubscription:
+        self.get(deployment_id)
+        if self._deployment_event_stream is None:
+            raise AppError(
+                503,
+                "DEPLOYMENT_EVENT_STREAM_UNAVAILABLE",
+                "The deployment event stream is unavailable",
+            )
+        try:
+            return self._deployment_event_stream.open(deployment_id, after_id)
+        except DeploymentEventStreamError as error:
+            status, code, message = _DEPLOYMENT_EVENT_STREAM_ERRORS.get(
+                error.code,
+                _DEPLOYMENT_EVENT_STREAM_ERRORS["DEPLOYMENT_EVENT_STREAM_UNAVAILABLE"],
+            )
+            raise AppError(status, code, message) from error
 
     def service_logs(
         self,

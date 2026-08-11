@@ -3,7 +3,11 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { listDeploymentEvents, listDeployments } from '@/entities/deployment/api';
+import {
+  listDeploymentEvents,
+  listDeployments,
+  subscribeDeploymentEvents,
+} from '@/entities/deployment/api';
 import type { Deployment } from '@/entities/deployment/types';
 import { getProject } from '@/entities/project/api';
 import type { Project } from '@/entities/project/types';
@@ -14,6 +18,7 @@ import { ProjectDetailPage } from './ProjectDetailPage';
 vi.mock('@/entities/deployment/api', () => ({
   listDeployments: vi.fn(),
   listDeploymentEvents: vi.fn(),
+  subscribeDeploymentEvents: vi.fn(),
 }));
 
 vi.mock('@/entities/project/api', () => ({
@@ -76,6 +81,7 @@ describe('ProjectDetailPage deployment history', () => {
     vi.mocked(getProject).mockResolvedValue(project);
     vi.mocked(listDeployments).mockResolvedValue({ items: [deployment] });
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: [] });
+    vi.mocked(subscribeDeploymentEvents).mockReturnValue(vi.fn());
     vi.mocked(getProjectRuntime).mockResolvedValue({
       status: 'NOT_ACTIVE',
       previewPort: null,

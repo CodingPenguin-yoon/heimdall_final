@@ -21,6 +21,8 @@ from heimdall.deployments.models import (
     DeploymentStatus,
 )
 
+DEPLOYMENT_EVENT_CHANNEL = "heimdall_deployment_events"
+
 
 class DeploymentRepository(Protocol):
     def create(
@@ -66,6 +68,10 @@ class DeploymentRepository(Protocol):
     ) -> Deployment: ...
 
     def list_events(self, deployment_id: UUID, limit: int = 100) -> Sequence[DeploymentEvent]: ...
+
+    def list_events_after(
+        self, deployment_id: UUID, after_id: int, limit: int = 100
+    ) -> Sequence[DeploymentEvent]: ...
 
     def reconcile_succeeded(self, deployment_id: UUID) -> Deployment: ...
 
@@ -402,6 +408,21 @@ class PostgresDeploymentRepository:
             ).fetchall()
         return [_event(row) for row in reversed(rows)]
 
+    def list_events_after(
+        self, deployment_id: UUID, after_id: int, limit: int = 100
+    ) -> Sequence[DeploymentEvent]:
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM deployment_events
+                WHERE deployment_id = %s AND id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (deployment_id, after_id, limit),
+            ).fetchall()
+        return [_event(row) for row in rows]
+
     def reconcile_succeeded(self, deployment_id: UUID) -> Deployment:
         now = datetime.now(UTC)
         with self._database.connection() as connection:
@@ -480,13 +501,24 @@ class PostgresDeploymentRepository:
         message: str,
         created_at: datetime,
     ) -> None:
-        connection.execute(
+        row = connection.execute(
             """
             INSERT INTO deployment_events (
                 deployment_id, stage, code, message, created_at
             ) VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (deployment_id, stage, code, message, created_at),
+        ).fetchone()
+        connection.execute(
+            "SELECT pg_notify(%s, %s)",
+            (
+                DEPLOYMENT_EVENT_CHANNEL,
+                json.dumps(
+                    {"deploymentId": str(deployment_id), "eventId": row["id"]},
+                    separators=(",", ":"),
+                ),
+            ),
         )
 
 

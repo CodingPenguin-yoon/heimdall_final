@@ -4,6 +4,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_runtime_models import runtime_deployment
 
+from heimdall.common.errors import install_error_handlers
+from heimdall.deployments.event_stream import (
+    DeploymentEventStreamEnd,
+    DeploymentEventStreamReady,
+)
+from heimdall.deployments.models import DeploymentEvent
 from heimdall.deployments.router import router
 from heimdall.runtime.logs import (
     ServiceLogLine,
@@ -44,6 +50,30 @@ class LogSubscription:
         self.closed = True
 
 
+class EventSubscription:
+    def __init__(self, deployment_id, after_id: int) -> None:
+        self.ready = DeploymentEventStreamReady(deployment_id, after_id)
+        self.events = [
+            None,
+            DeploymentEvent(
+                id=after_id + 1,
+                deployment_id=deployment_id,
+                stage="BUILDING",
+                code="IMAGES_BUILDING",
+                message="Building service images",
+                created_at=datetime(2026, 8, 10, 1, tzinfo=UTC),
+            ),
+            DeploymentEventStreamEnd(),
+        ]
+        self.closed = False
+
+    def receive(self):
+        return self.events.pop(0)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class DeploymentCatalog:
     def __init__(self) -> None:
         self.item = runtime_deployment()
@@ -71,6 +101,10 @@ class DeploymentCatalog:
         assert service_name == "api"
         self.subscription = LogSubscription(deployment_id)
         return self.subscription
+
+    def open_event_stream(self, deployment_id, after_id):
+        self.event_subscription = EventSubscription(deployment_id, after_id)
+        return self.event_subscription
 
 
 def test_global_deployments_returns_existing_public_dto() -> None:
@@ -177,3 +211,43 @@ def test_service_log_stream_rejects_noncanonical_service_name() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_deployment_event_stream_uses_largest_resume_cursor_and_public_sse_contract() -> None:
+    app = FastAPI()
+    catalog = DeploymentCatalog()
+    app.state.deployments = catalog
+    app.include_router(router, prefix="/api")
+
+    response = TestClient(app).get(
+        f"/api/deployments/{catalog.item.id}/events/stream?after=4",
+        headers={"Accept": "text/event-stream", "Last-Event-ID": "9"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert '"after":9' in response.text
+    assert ": keepalive" in response.text
+    assert "id: 10" in response.text
+    assert "event: deployment-event" in response.text
+    assert '"code":"IMAGES_BUILDING"' in response.text
+    assert "event: end" in response.text
+    assert catalog.event_subscription.closed is True
+
+
+def test_deployment_event_stream_rejects_invalid_last_event_id() -> None:
+    app = FastAPI()
+    install_error_handlers(app)
+    catalog = DeploymentCatalog()
+    app.state.deployments = catalog
+    app.include_router(router, prefix="/api")
+
+    response = TestClient(app).get(
+        f"/api/deployments/{catalog.item.id}/events/stream",
+        headers={"Last-Event-ID": "not-a-number"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_EVENT_CURSOR"

@@ -36,6 +36,43 @@ export function listDeploymentEvents(deploymentId: string): Promise<{ items: Dep
   return requestJson(`/deployments/${deploymentId}/events`);
 }
 
+export interface DeploymentEventStreamHandlers {
+  onOpen: () => void;
+  onReady: () => void;
+  onEvent: (event: DeploymentEvent) => void;
+  onEnd: (reason: string) => void;
+  onStreamError: (code: string) => void;
+  onConnectionError: () => void;
+}
+
+export function subscribeDeploymentEvents(
+  deploymentId: string,
+  afterId: number,
+  handlers: DeploymentEventStreamHandlers,
+): () => void {
+  const source = new EventSource(`/api/deployments/${deploymentId}/events/stream?after=${afterId}`);
+
+  source.onopen = handlers.onOpen;
+  source.addEventListener('ready', handlers.onReady);
+  source.addEventListener('deployment-event', (event) => {
+    const value = parseEvent<DeploymentEvent>(event);
+    if (value) handlers.onEvent(value);
+  });
+  source.addEventListener('end', (event) => {
+    const value = parseEvent<{ reason?: string }>(event);
+    source.close();
+    handlers.onEnd(value?.reason ?? 'DEPLOYMENT_TERMINAL');
+  });
+  source.addEventListener('stream-error', (event) => {
+    const value = parseEvent<{ code?: string }>(event);
+    source.close();
+    handlers.onStreamError(value?.code ?? 'DEPLOYMENT_EVENT_STREAM_UNAVAILABLE');
+  });
+  source.onerror = handlers.onConnectionError;
+
+  return () => source.close();
+}
+
 export function getServiceLogs(
   deploymentId: string,
   serviceName?: string,

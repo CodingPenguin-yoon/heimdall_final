@@ -46,12 +46,11 @@ export const deploymentQuery = (deploymentId: string) =>
       query.state.data && !isDeploymentTerminal(query.state.data.status) ? 1_000 : false,
   });
 
-export const deploymentEventsQuery = (deploymentId: string | undefined, active: boolean) =>
+export const deploymentEventsQuery = (deploymentId: string | undefined) =>
   queryOptions({
     queryKey: deploymentKeys.events(deploymentId ?? 'none'),
     queryFn: () => listDeploymentEvents(deploymentId ?? ''),
     enabled: Boolean(deploymentId),
-    refetchInterval: active ? 1_000 : false,
   });
 
 export const deploymentServiceLogsQuery = (deploymentId: string, serviceName?: string) =>

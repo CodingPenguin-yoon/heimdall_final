@@ -122,10 +122,21 @@ raw·redacted 로그를 Control DB나 filesystem에 저장하지 않는다. Dock
 경계를 넘어 안전하게 exact 치환할 수 없는 multiline·oversized secret은 로그 원문을 읽기 전에
 redaction unavailable로 차단한다.
 
+구조화 deployment event는 먼저 durable snapshot을 조회하고 active deployment 동안
+`GET /api/deployments/{deploymentId}/events/stream` SSE로 이어 받는다. event insert transaction은
+commit 시 deployment UUID와 event ID만 PostgreSQL `NOTIFY` payload로 보내고, API의 `LISTEN`
+subscription은 이를 wake-up 신호로만 사용한다. 실제 전달 내용과 순서는 항상
+`deployment_events.id > cursor` 조회가 결정하므로 notification 유실이나 EventSource 재연결에도
+`Last-Event-ID` 뒤부터 복구한다. API DB pool 8개 중 일반 요청용 연결을 남기기 위해 LISTEN
+subscription은 최대 4개이며, terminal 상태에서 남은 row를 모두 전달한 뒤 종료한다.
+
 live broker는 snapshot broker와 별도 owner-only socket·최대 4개 capacity를 사용한다. stdout·stderr
 reader는 bounded queue로 backpressure를 전달하고 5초 keepalive로 출력이 없는 disconnect도 감지한다.
 API subscription close는 Worker socket close로, 다시 Docker follow process group terminate로 전파된다.
 SSE 재연결은 durable cursor 대신 새 tail 200 session으로 UI buffer를 교체한다.
+서비스 로그 화면의 일시정지는 stream 수집이 아니라 자동 스크롤만 멈춘다. 최근 200줄 buffer와
+redaction은 계속 동작하고 새 line 수를 표시하며, 최신 로그 이동이나 service 전환 시 자동 추적을
+다시 시작한다.
 
 ## Runtime generation
 

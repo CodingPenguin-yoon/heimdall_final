@@ -978,6 +978,19 @@ tbody tr:hover {
   color: var(--text);
 }
 
+.service-log-follow-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.service-log-follow-controls .button {
+  min-height: 30px;
+  padding: 0.34rem 0.58rem;
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
 .service-log-connection {
   display: inline-flex;
   align-items: center;
@@ -1654,6 +1667,11 @@ tbody tr:hover {
 
   .service-log-controls label {
     min-width: 0;
+  }
+
+  .service-log-follow-controls {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .deployment-metadata {

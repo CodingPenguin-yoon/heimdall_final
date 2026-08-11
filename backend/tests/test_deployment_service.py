@@ -5,6 +5,7 @@ from conftest import FakeGit, MemoryDeployments, MemoryProjects
 from test_project_schemas import valid_settings
 
 from heimdall.common.errors import AppError
+from heimdall.deployments.event_stream import DeploymentEventStreamError
 from heimdall.deployments.models import DeploymentSource
 from heimdall.deployments.schemas import DeploymentCreate
 from heimdall.deployments.service import DeploymentService
@@ -57,6 +58,19 @@ class ServiceLogStreams:
         self.requests.append((deployment_id, service_name))
         if self.error_code is not None:
             raise ServiceLogError(self.error_code)
+        return self.subscription
+
+
+class DeploymentEventStreams:
+    def __init__(self, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.requests = []
+        self.subscription = object()
+
+    def open(self, deployment_id, after_id):
+        self.requests.append((deployment_id, after_id))
+        if self.error_code is not None:
+            raise DeploymentEventStreamError(self.error_code)
         return self.subscription
 
 
@@ -202,6 +216,49 @@ def test_service_log_stream_failures_map_to_stable_http_errors(
 
     with pytest.raises(AppError) as raised:
         service.open_service_log_stream(deployment.id, None)
+
+    assert raised.value.status == 503
+    assert raised.value.code == expected_code
+
+
+def test_deployment_event_stream_is_opened_after_lookup_with_cursor() -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = DeploymentEventStreams()
+    service = DeploymentService(repository, projects, deployment_event_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    subscription = service.open_event_stream(deployment.id, 17)
+
+    assert subscription is streams.subscription
+    assert streams.requests == [(deployment.id, 17)]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_code"),
+    [
+        ("DEPLOYMENT_EVENT_STREAM_BUSY", "DEPLOYMENT_EVENT_STREAM_BUSY"),
+        ("UNKNOWN_STREAM_ERROR", "DEPLOYMENT_EVENT_STREAM_UNAVAILABLE"),
+    ],
+)
+def test_deployment_event_stream_failures_map_to_stable_http_errors(
+    error_code: str,
+    expected_code: str,
+) -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = DeploymentEventStreams(error_code)
+    service = DeploymentService(repository, projects, deployment_event_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    with pytest.raises(AppError) as raised:
+        service.open_event_stream(deployment.id, 0)
 
     assert raised.value.status == 503
     assert raised.value.code == expected_code

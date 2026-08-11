@@ -9,6 +9,7 @@ from heimdall.api import router
 from heimdall.common.errors import install_error_handlers
 from heimdall.config import Settings
 from heimdall.database import Database
+from heimdall.deployments.event_stream import PostgresDeploymentEventStreamGateway
 from heimdall.deployments.repository import PostgresDeploymentRepository
 from heimdall.deployments.service import DeploymentService
 from heimdall.git.client import GitClient
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 service_log_stream_socket_path(app_settings.runtime_root),
                 handshake_timeout_seconds=app_settings.service_log_broker_timeout_seconds,
             ),
+            PostgresDeploymentEventStreamGateway(database, deployment_repository),
         )
         runtime_status = RuntimeStatusService(PostgresRuntimeRepository(database), projects)
         runtime_reconciliations = RuntimeReconciliationService(

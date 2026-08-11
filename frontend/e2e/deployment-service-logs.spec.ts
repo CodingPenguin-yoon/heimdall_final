@@ -94,3 +94,86 @@ test('follows live service logs and keeps manual snapshot refresh', async ({ pag
   expect(streamedServices).toEqual([null, 'api']);
   expect(snapshotServices).toEqual(['api']);
 });
+
+test('receives structured deployment events over SSE from the last stored event', async ({
+  page,
+}) => {
+  const activeDeploymentId = '99999999-9999-4999-8999-999999999999';
+  const streamCursors: string[] = [];
+  let currentStatus = 'BUILDING';
+  await page.route(new RegExp(`/api/deployments/${activeDeploymentId}(?:/.*)?`), async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === `/api/deployments/${activeDeploymentId}`) {
+      await route.fulfill({
+        json: {
+          ...deployment,
+          id: activeDeploymentId,
+          status: currentStatus,
+          terminalAt: currentStatus === 'SUCCEEDED' ? deployment.terminalAt : null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/deployments/${activeDeploymentId}/events`) {
+      await route.fulfill({
+        json: {
+          items: [
+            {
+              id: 11,
+              deploymentId: activeDeploymentId,
+              stage: 'BUILDING',
+              code: 'IMAGES_BUILDING',
+              message: 'Building service images',
+              createdAt: '2026-08-10T06:01:00Z',
+            },
+          ],
+        },
+      });
+      return;
+    }
+    if (url.pathname === `/api/deployments/${activeDeploymentId}/events/stream`) {
+      streamCursors.push(url.searchParams.get('after') ?? '');
+      currentStatus = 'SUCCEEDED';
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: [
+          `event: ready\ndata: {"deploymentId":"${activeDeploymentId}","after":11}\n\n`,
+          `id: 12\nevent: deployment-event\ndata: ${JSON.stringify({
+            id: 12,
+            deploymentId: activeDeploymentId,
+            stage: 'SUCCEEDED',
+            code: 'DEPLOYMENT_SUCCEEDED',
+            message: 'The preview deployment is active',
+            createdAt: '2026-08-10T06:02:00Z',
+          })}\n\n`,
+          'event: end\ndata: {"reason":"DEPLOYMENT_TERMINAL"}\n\n',
+        ].join(''),
+      });
+      return;
+    }
+    if (url.pathname === `/api/deployments/${activeDeploymentId}/service-logs/stream`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: [
+          `event: ready\ndata: ${JSON.stringify({
+            deploymentId: activeDeploymentId,
+            services: ['web'],
+            serviceName: 'web',
+            connectedAt: '2026-08-10T06:02:00Z',
+          })}\n\n`,
+          'event: end\ndata: {"reason":"CONTAINER_LOG_ENDED"}\n\n',
+        ].join(''),
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
+  });
+
+  await page.goto(`/deployments/${activeDeploymentId}`);
+
+  await expect(page.getByText('DEPLOYMENT_SUCCEEDED')).toBeVisible();
+  await expect(page.getByText('The preview deployment is active')).toBeVisible();
+  await expect.poll(() => streamCursors).toEqual(['11']);
+});

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,9 +8,13 @@ import {
   getDeployment,
   getServiceLogs,
   listDeploymentEvents,
+  subscribeDeploymentEvents,
   subscribeServiceLogs,
 } from '@/entities/deployment/api';
-import type { ServiceLogStreamHandlers } from '@/entities/deployment/api';
+import type {
+  DeploymentEventStreamHandlers,
+  ServiceLogStreamHandlers,
+} from '@/entities/deployment/api';
 import type { Deployment, DeploymentEvent, ServiceLogSnapshot } from '@/entities/deployment/types';
 import { ApiError } from '@/shared/api/client';
 
@@ -20,6 +24,7 @@ vi.mock('@/entities/deployment/api', () => ({
   getDeployment: vi.fn(),
   getServiceLogs: vi.fn(),
   listDeploymentEvents: vi.fn(),
+  subscribeDeploymentEvents: vi.fn(),
   subscribeServiceLogs: vi.fn(),
 }));
 
@@ -93,12 +98,20 @@ function renderPage() {
 
 describe('DeploymentDetailPage', () => {
   let latestStreamHandlers: ServiceLogStreamHandlers | null;
+  let latestEventStreamHandlers: DeploymentEventStreamHandlers | null;
 
   beforeEach(() => {
     latestStreamHandlers = null;
+    latestEventStreamHandlers = null;
     vi.mocked(getDeployment).mockResolvedValue(deployment);
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: events });
     vi.mocked(getServiceLogs).mockResolvedValue(serviceLogs);
+    vi.mocked(subscribeDeploymentEvents).mockImplementation((_, __, handlers) => {
+      latestEventStreamHandlers = handlers;
+      handlers.onOpen();
+      handlers.onReady();
+      return vi.fn();
+    });
     vi.mocked(subscribeServiceLogs).mockImplementation((_, requestedService, handlers) => {
       latestStreamHandlers = handlers;
       const selectedService = requestedService ?? 'web';
@@ -160,6 +173,27 @@ describe('DeploymentDetailPage', () => {
     expect(rows[1]).toHaveTextContent('IMAGES_BUILDING');
     expect(rows[1]).toHaveTextContent('Building service images from the selected commit');
     expect(screen.getByText('실시간')).toBeInTheDocument();
+    expect(subscribeDeploymentEvents).toHaveBeenCalledWith(deployment.id, 2, expect.any(Object));
+  });
+
+  it('appends deployment events delivered by SSE', async () => {
+    renderPage();
+    await screen.findByText('IMAGES_BUILDING');
+
+    act(() => {
+      latestEventStreamHandlers?.onEvent({
+        id: 3,
+        deploymentId: deployment.id,
+        stage: 'STARTING',
+        code: 'SERVICES_STARTING',
+        message: 'Starting service containers',
+        createdAt: '2026-08-06T03:01:10Z',
+      });
+    });
+
+    const log = screen.getByRole('log', { name: '배포 이벤트 로그' });
+    expect(await within(log).findByText('SERVICES_STARTING')).toBeInTheDocument();
+    expect(within(log).getAllByRole('listitem')).toHaveLength(3);
   });
 
   it('shows a stable failure summary on a failed deployment', async () => {
@@ -196,6 +230,44 @@ describe('DeploymentDetailPage', () => {
 
     await user.click(screen.getByRole('button', { name: '새로고침' }));
     expect(getServiceLogs).toHaveBeenCalledWith(deployment.id, undefined);
+  });
+
+  it('pauses only service-log auto-scroll and exposes newly received lines', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText(longLogLine);
+
+    await user.click(screen.getByRole('button', { name: '자동 스크롤 일시정지' }));
+    act(() => {
+      latestStreamHandlers?.onLine({
+        timestamp: '2026-08-06T03:01:22.000000000Z',
+        stream: 'STDOUT',
+        message: 'received while paused',
+        truncated: false,
+      });
+    });
+
+    expect(await screen.findByText('received while paused')).toBeInTheDocument();
+    const latestButton = screen.getByRole('button', { name: '최신 로그 1개' });
+    expect(latestButton).toBeInTheDocument();
+
+    await user.click(latestButton);
+    expect(screen.getByRole('button', { name: '자동 스크롤 일시정지' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '최신 로그 1개' })).not.toBeInTheDocument();
+  });
+
+  it('pauses auto-scroll when the operator moves away from the latest service log', async () => {
+    renderPage();
+    const log = await screen.findByRole('log', { name: '서비스 컨테이너 로그' });
+    Object.defineProperties(log, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, value: 300, writable: true },
+    });
+
+    fireEvent.scroll(log);
+
+    expect(screen.getByRole('button', { name: '자동 스크롤 계속' })).toBeInTheDocument();
   });
 
   it('switches the live stream and refreshes the snapshot only when requested', async () => {

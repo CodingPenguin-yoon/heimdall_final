@@ -18,8 +18,8 @@ Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 �
 - service health check와 project별 NGINX atomic activation
 - 실패 시 last-known-good preview 보존과 candidate label cleanup
 - 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
-- 배포 event polling, 실패 단계와 안정 preview link
-- Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot과 secret 마스킹
+- durable cursor 기반 배포 event SSE, 실패 단계와 안정 preview link
+- Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot·SSE와 secret 마스킹
 - 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
 - 밝은 화이트톤 관리 UI
 
@@ -59,6 +59,8 @@ Worker만 Docker socket을 사용한다. API process와 배포 project container
 `logs.sock`과 `log-stream.sock`을 통해 Worker에 요청한다. API와 Worker를 함께 실행해야 하며
 Worker가 없으면 로그 조회만 stable `503`으로 실패하고 배포 처리 상태는 바뀌지 않는다. snapshot과
 live stream은 각각 최대 4개 처리 슬롯을 사용해 장시간 SSE 연결이 수동 조회를 막지 않는다.
+구조화 deployment event SSE도 최대 4개의 PostgreSQL LISTEN 연결만 사용해 API pool 8개 중 일반
+요청용 연결을 남긴다.
 
 ## Frontend
 
@@ -137,6 +139,14 @@ QUEUED
 
 build, start, health 또는 activation이 실패하면 candidate resource만 정리하고 기존 active generation과 Managed PostgreSQL data는 유지한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한 resource만 대상으로 한다.
 
+`GET /api/deployments/{deploymentId}/events`는 저장된 구조화 event snapshot을 반환한다.
+active deployment의 UI는 마지막 event ID를
+`GET /api/deployments/{deploymentId}/events/stream?after={eventId}`에 넘겨 이후 event를 SSE로
+이어 받는다. insert transaction은 deployment UUID와 event ID만 PostgreSQL `NOTIFY`로 보내며 실제
+event는 항상 Control DB에서 cursor 조회한다. 브라우저 재연결의 `Last-Event-ID`도 함께 반영하므로
+notification이 유실되거나 연결이 잠시 끊겨도 저장된 event부터 복구한다. 배포가 terminal이면 남은
+event를 보낸 뒤 stream을 닫는다.
+
 `GET /api/deployments/{deploymentId}/service-logs?service={serviceName}`은 immutable snapshot의
 service만 선택하고 deterministic container 이름과 managed·project·deployment label을 모두 확인한
 뒤 최근 200줄을 조회한다. stdout과 stderr는 Docker timestamp 순으로 반환하고, Heimdall이 관리하는
@@ -150,7 +160,8 @@ line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
 끊어지면 자동 재연결하며 새 session의 tail 200으로 화면 buffer를 교체한다. service 전환, HTTP
 disconnect, Worker 종료와 container log 종료 시 해당 Docker follow process를 정리한다. line은
 16KiB, 화면 buffer는 200줄로 제한하고 raw·redacted log 모두 저장하지 않는다. 기존 `새로고침`은
-snapshot fallback으로 유지한다.
+snapshot fallback으로 유지한다. 자동 스크롤 일시정지는 SSE 수집을 끊지 않으며 새 line 수를
+표시하고, `최신 로그` 버튼으로 마지막 line 이동과 자동 추적을 함께 재개한다.
 
 다음 배포에서 project gateway가 정지 상태면 Worker는 managed·project·gateway label과 실제
 running 상태를 함께 확인한다. exact managed gateway만 저장된 Preview 포트와 기존 active
