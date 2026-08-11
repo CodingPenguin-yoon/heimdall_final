@@ -1,5 +1,6 @@
 import os
 import socket
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from pathlib import Path
 def ready() -> bool:
     secret = Path(os.environ["APP_SECRET"]).read_text().strip()
     password = Path(os.environ["DATABASE_PASSWORD_FILE"]).read_text().strip()
+    print(f"application-secret={secret}", flush=True)
+    print(f"database-password={password}", file=sys.stderr, flush=True)
     if secret != "runtime-user-secret-canary" or not password:
         return False
     with socket.create_connection(

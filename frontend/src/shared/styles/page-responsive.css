@@ -1,0 +1,145 @@
+@media (max-width: 1100px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summary-grid article:nth-child(2) {
+    border-right: 0;
+  }
+
+  .summary-grid article:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-layout,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sticky-card,
+  .deploy-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 620px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-grid article {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .activity-live-note {
+    align-self: flex-start;
+  }
+
+  .activity-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .activity-project-filter {
+    min-width: 0;
+  }
+
+  .project-hero,
+  .setup-banner,
+  .preview-access-value {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .preview-access-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-access-panel > p {
+    grid-column: 1;
+  }
+
+  .topology-list article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .topology-list article code,
+  .topology-list article .health-pill,
+  .topology-list article .database-pill {
+    grid-column: 2;
+  }
+
+  .deployment-detail-hero,
+  .deployment-result-failed {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .deployment-detail-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .deployment-log-heading {
+    flex-direction: column;
+  }
+
+  .deployment-log-summary {
+    justify-items: start;
+  }
+
+  .service-log-heading,
+  .service-log-meta {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-log-controls {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .service-log-controls label {
+    min-width: 0;
+  }
+
+  .service-log-follow-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .deployment-metadata {
+    grid-template-columns: 1fr;
+  }
+
+  .deployment-metadata > div,
+  .deployment-metadata > div:nth-child(2n),
+  .deployment-metadata > div:nth-last-child(-n + 2) {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .deployment-metadata > div:last-child {
+    border-bottom: 0;
+  }
+
+  .deployment-progress {
+    gap: 0.7rem;
+    grid-template-columns: 1fr;
+  }
+
+  .deployment-progress li {
+    justify-items: start;
+    grid-template-columns: auto 1fr;
+    text-align: left;
+  }
+
+  .deployment-progress li::after {
+    top: 36px;
+    left: 16px;
+    width: 2px;
+    height: calc(100% - 20px);
+  }
+}

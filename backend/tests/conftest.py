@@ -166,5 +166,9 @@ class MemoryDeployments:
     def list_for_project(self, project_id: UUID) -> Sequence[Deployment]:
         return [item for item in self.items.values() if item.project_id == project_id]
 
+    def list_recent(self, limit: int = 100) -> Sequence[Deployment]:
+        by_id = sorted(self.items.values(), key=lambda item: item.id)
+        return sorted(by_id, key=lambda item: item.created_at, reverse=True)[:limit]
+
     def get(self, deployment_id: UUID) -> Deployment:
         return self.items[deployment_id]

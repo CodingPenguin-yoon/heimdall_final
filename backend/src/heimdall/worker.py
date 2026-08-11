@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import socket
@@ -8,6 +9,7 @@ from threading import Event
 
 from heimdall.config import Settings
 from heimdall.database import Database
+from heimdall.deployments.models import DeploymentNotFoundError
 from heimdall.deployments.repository import PostgresDeploymentRepository
 from heimdall.deployments.service import DeploymentService
 from heimdall.deployments.worker import DeploymentWorker
@@ -15,13 +17,48 @@ from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
 from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
-from heimdall.runtime.gateway import HttpRouteProbe, NginxGatewayActivator
+from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.gateway import NginxGatewayActivator
+from heimdall.runtime.gateway_probe import HttpRouteProbe
+from heimdall.runtime.log_broker import UnixServiceLogBrokerServer, service_log_socket_path
+from heimdall.runtime.log_stream_broker import (
+    UnixServiceLogStreamBrokerServer,
+    service_log_stream_socket_path,
+)
+from heimdall.runtime.logs import ServiceLogError
+from heimdall.runtime.models import RuntimeConfigurationError, RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
+from heimdall.runtime.process_stream import SubprocessCommandStreamRunner
 from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
 from heimdall.runtime.reconciliation_worker import RuntimeReconciliationWorker
 from heimdall.runtime.repository import PostgresRuntimeRepository
 from heimdall.runtime.service import DockerDeploymentProcessor
 from heimdall.secrets.store import FileSecretStore
+
+logger = logging.getLogger(__name__)
+
+
+def restore_active_database_networks(deployments, runtimes, docker) -> int:
+    restored_count = 0
+    for stored in runtimes.list_active():
+        if stored.active_deployment_id is None or stored.active_network_name is None:
+            continue
+        try:
+            deployment = deployments.get(stored.active_deployment_id)
+            runtime = RuntimeDeployment.from_deployment(deployment)
+        except (DeploymentNotFoundError, RuntimeConfigurationError):
+            logger.warning(
+                "active runtime database network could not be restored from stored metadata",
+                extra={"project_id": str(stored.project_id)},
+            )
+            continue
+        if docker.restore_active_database_network(
+            deployment,
+            runtime,
+            stored.active_network_name,
+        ):
+            restored_count += 1
+    return restored_count
 
 
 def run(settings: Settings | None = None, stop: Event | None = None) -> None:
@@ -29,6 +66,8 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
     stop_event = stop or Event()
     database = Database(app_settings.database_url)
     database.open()
+    log_broker: UnixServiceLogBrokerServer | None = None
+    log_stream_broker: UnixServiceLogStreamBrokerServer | None = None
     try:
         runner = SubprocessCommandRunner(
             heartbeat_interval_seconds=max(1, app_settings.worker_lease_seconds / 3)
@@ -50,7 +89,65 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             managed_database_container=app_settings.managed_database_container,
             command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
             health_timeout_seconds=app_settings.runtime_health_timeout_seconds,
+            probe_host=app_settings.runtime_probe_host,
         )
+        restored_networks = restore_active_database_networks(deployments, runtimes, docker)
+        if restored_networks:
+            logger.info("restored %s active managed database network(s)", restored_networks)
+        log_reader = DockerServiceLogReader(
+            runner,
+            secret_store,
+            executable=app_settings.docker_executable,
+            command_timeout_seconds=app_settings.service_log_command_timeout_seconds,
+        )
+        log_streamer = DockerServiceLogStreamer(
+            runner,
+            SubprocessCommandStreamRunner(),
+            secret_store,
+            executable=app_settings.docker_executable,
+            command_timeout_seconds=app_settings.service_log_command_timeout_seconds,
+        )
+
+        def read_service_logs(deployment_id, service_name):
+            try:
+                deployment = deployments.get(deployment_id)
+            except DeploymentNotFoundError as error:
+                raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
+            return log_reader.read(deployment, service_name)
+
+        def stream_service_logs(deployment_id, service_name):
+            try:
+                deployment = deployments.get(deployment_id)
+            except DeploymentNotFoundError as error:
+                raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
+            return log_streamer.open(deployment, service_name)
+
+        candidate_broker = UnixServiceLogBrokerServer(
+            service_log_socket_path(app_settings.broker_socket_root),
+            read_service_logs,
+        )
+        try:
+            candidate_broker.start()
+        except OSError:
+            logger.warning(
+                "service log broker could not start; deployment processing continues",
+                exc_info=True,
+            )
+        else:
+            log_broker = candidate_broker
+        candidate_stream_broker = UnixServiceLogStreamBrokerServer(
+            service_log_stream_socket_path(app_settings.broker_socket_root),
+            stream_service_logs,
+        )
+        try:
+            candidate_stream_broker.start()
+        except OSError:
+            logger.warning(
+                "service log stream broker could not start; deployment processing continues",
+                exc_info=True,
+            )
+        else:
+            log_stream_broker = candidate_stream_broker
         gateway = NginxGatewayActivator(
             runtimes,
             docker,
@@ -60,6 +157,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             docker_executable=app_settings.docker_executable,
             image=app_settings.nginx_image,
             command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
+            probe_host=app_settings.runtime_probe_host,
         )
         processor = DockerDeploymentProcessor(
             projects,
@@ -93,6 +191,10 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             if not reconciliation_worker.run_once():
                 stop_event.wait(app_settings.worker_poll_seconds)
     finally:
+        if log_stream_broker is not None:
+            log_stream_broker.stop()
+        if log_broker is not None:
+            log_broker.stop()
         database.close()
 
 

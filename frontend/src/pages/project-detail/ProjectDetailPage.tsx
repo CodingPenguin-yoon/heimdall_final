@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 
-import { deploymentEventsQuery, deploymentsQuery } from '@/entities/deployment/queries';
+import { deploymentsQuery } from '@/entities/deployment/queries';
+import { useDeploymentEvents } from '@/entities/deployment/useDeploymentEvents';
 import { projectQuery } from '@/entities/project/queries';
 import { StatusBadge } from '@/entities/project/StatusBadge';
 import { PreviewAccessPanel } from '@/entities/runtime/PreviewAccessPanel';
@@ -20,7 +21,7 @@ export function ProjectDetailPage() {
   const latestDeployment = deployments.data?.items[0];
   const latestDeploymentActive =
     latestDeployment !== undefined && !['SUCCEEDED', 'FAILED'].includes(latestDeployment.status);
-  const events = useQuery(deploymentEventsQuery(latestDeployment?.id, latestDeploymentActive));
+  const events = useDeploymentEvents(latestDeployment?.id, latestDeploymentActive);
 
   if (project.isLoading) return <div className="loading-page">프로젝트를 불러오는 중입니다.</div>;
   if (!project.data) return <div className="loading-page">프로젝트를 찾을 수 없습니다.</div>;
@@ -139,6 +140,13 @@ export function ProjectDetailPage() {
                     </div>
                     <code>{shortSha(deployment.resolvedCommitSha)}</code>
                     <small>Config v{deployment.configVersion}</small>
+                    <Link
+                      className="row-arrow"
+                      to={`/deployments/${deployment.id}`}
+                      aria-label={`${shortSha(deployment.resolvedCommitSha)} 배포 상세 열기`}
+                    >
+                      <Icon name="arrow" />
+                    </Link>
                     {deployment.failureCode === 'RECOVERY_STATE_UNCERTAIN' ? (
                       <RuntimeReconciliationPanel deployment={deployment} projectId={projectId} />
                     ) : null}
@@ -148,10 +156,10 @@ export function ProjectDetailPage() {
             ) : (
               <div className="empty-panel compact-empty">아직 배포 요청이 없습니다.</div>
             )}
-            {latestDeployment && events.data?.items.length ? (
+            {latestDeployment && events.items.length ? (
               <div className="deployment-events">
                 <strong>Latest activity</strong>
-                {events.data.items.slice(-6).map((event) => (
+                {events.items.slice(-6).map((event) => (
                   <div key={event.id}>
                     <span>{event.stage.replaceAll('_', ' ')}</span>
                     <p>{event.message}</p>

@@ -1,4 +1,25 @@
-name: heimdall-python-dev
+name: heimdall-python-local
+
+x-backend-environment: &backend-environment
+  HEIMDALL_DATABASE_URL: postgresql://heimdall:${HEIMDALL_CONTROL_DB_PASSWORD:?required}@control-postgres:5432/heimdall_control
+  HEIMDALL_PROJECT_DB_ENABLED: ${HEIMDALL_PROJECT_DB_ENABLED:-true}
+  HEIMDALL_PROJECT_DB_ADMIN_URL: postgresql://heimdall_provisioner:${HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD:?required}@managed-postgres:5432/postgres
+  HEIMDALL_PROJECT_DB_RUNTIME_HOST: ${HEIMDALL_PROJECT_DB_RUNTIME_HOST:-managed-postgres}
+  HEIMDALL_PROJECT_DB_RUNTIME_PORT: ${HEIMDALL_PROJECT_DB_RUNTIME_PORT:-5432}
+  HEIMDALL_RUNTIME_ROOT: ${HEIMDALL_RUNTIME_ROOT:?required}
+  HEIMDALL_BROKER_SOCKET_ROOT: /var/run/heimdall
+  HEIMDALL_GIT_WORKSPACE_ROOT: ${HEIMDALL_GIT_WORKSPACE_ROOT:?required}
+  HEIMDALL_DOCKER_EXECUTABLE: /usr/local/bin/docker
+  HEIMDALL_MANAGED_DB_CONTAINER: ${HEIMDALL_MANAGED_DB_CONTAINER:-heimdall-managed-postgres}
+  HEIMDALL_NGINX_IMAGE: ${HEIMDALL_NGINX_IMAGE:-nginx:1.29-alpine}
+  HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS:-900}
+  HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS:-60}
+  HEIMDALL_SERVICE_LOG_COMMAND_TIMEOUT_SECONDS: ${HEIMDALL_SERVICE_LOG_COMMAND_TIMEOUT_SECONDS:-5}
+  HEIMDALL_SERVICE_LOG_BROKER_TIMEOUT_SECONDS: ${HEIMDALL_SERVICE_LOG_BROKER_TIMEOUT_SECONDS:-6}
+  HEIMDALL_WORKER_LEASE_SECONDS: ${HEIMDALL_WORKER_LEASE_SECONDS:-120}
+  HEIMDALL_WORKER_POLL_SECONDS: ${HEIMDALL_WORKER_POLL_SECONDS:-1}
+  HEIMDALL_WORKER_MAX_ATTEMPTS: ${HEIMDALL_WORKER_MAX_ATTEMPTS:-3}
+  HEIMDALL_RUNTIME_RETENTION_HOURS: ${HEIMDALL_RUNTIME_RETENTION_HOURS:-72}
 
 services:
   control-postgres:
@@ -16,6 +37,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   managed-postgres:
     container_name: heimdall-managed-postgres
@@ -36,7 +58,87 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  api:
+    image: heimdall-control-backend:local
+    build:
+      context: ../../backend
+    environment:
+      <<: *backend-environment
+    ports:
+      - "127.0.0.1:${HEIMDALL_API_PORT:-8000}:8000"
+    volumes:
+      - type: bind
+        source: ${HEIMDALL_RUNTIME_ROOT:?required}
+        target: ${HEIMDALL_RUNTIME_ROOT:?required}
+      - broker-sockets:/var/run/heimdall
+    depends_on:
+      control-postgres:
+        condition: service_healthy
+        restart: true
+      managed-postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    image: heimdall-control-backend:local
+    build:
+      context: ../../backend
+    command: ["heimdall-worker"]
+    environment:
+      <<: *backend-environment
+      HEIMDALL_RUNTIME_PROBE_HOST: host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ${HEIMDALL_RUNTIME_ROOT:?required}
+        target: ${HEIMDALL_RUNTIME_ROOT:?required}
+      - type: bind
+        source: ${HEIMDALL_GIT_WORKSPACE_ROOT:?required}
+        target: ${HEIMDALL_GIT_WORKSPACE_ROOT:?required}
+      - broker-sockets:/var/run/heimdall
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      control-postgres:
+        condition: service_healthy
+        restart: true
+      managed-postgres:
+        condition: service_healthy
+        restart: true
+    restart: unless-stopped
+
+  frontend:
+    image: heimdall-control-frontend:local
+    build:
+      context: ../../frontend
+    ports:
+      - "127.0.0.1:${HEIMDALL_FRONTEND_PORT:-5173}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
 
 volumes:
   control-postgres:
   managed-postgres:
+  broker-sockets:

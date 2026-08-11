@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 
 import { createDeployment } from '@/entities/deployment/api';
 import { deploymentKeys } from '@/entities/deployment/queries';
@@ -12,6 +13,7 @@ import { Icon } from '@/shared/ui/Icon';
 
 export function DeployPanel({ project }: { project: Project }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const commits = useQuery(commitsQuery(project.id));
   const [selectedSha, setSelectedSha] = useState<string>('HEAD');
 
@@ -23,8 +25,10 @@ export function DeployPanel({ project }: { project: Project }) {
           ? { type: 'MAIN_HEAD' }
           : { type: 'MAIN_COMMIT', commitSha: selectedSha },
       ),
-    onSuccess: async () => {
-      await Promise.all([
+    onSuccess: (deployment) => {
+      queryClient.setQueryData(deploymentKeys.detail(deployment.id), deployment);
+      navigate(`/deployments/${deployment.id}`);
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: deploymentKeys.project(project.id) }),
         queryClient.invalidateQueries({ queryKey: runtimeKeys.project(project.id) }),
       ]);

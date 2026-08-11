@@ -1,0 +1,236 @@
+.deployment-activity-page {
+  max-width: 1280px;
+  margin-inline: auto;
+}
+
+.activity-live-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.7rem;
+  color: #526176;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.activity-live-note > span {
+  width: 7px;
+  height: 7px;
+  border: 2px solid #c8f3d5;
+  border-radius: 50%;
+  background: #26a758;
+  box-sizing: content-box;
+}
+
+.activity-panel-heading {
+  margin-bottom: 0.8rem;
+}
+
+.activity-filters {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8fafc;
+}
+
+.activity-filter-buttons {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.activity-filter-buttons button {
+  min-height: 34px;
+  padding: 0.45rem 0.7rem;
+  color: #667085;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  background: transparent;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.activity-filter-buttons button:hover {
+  color: #344054;
+  background: #eef2f7;
+}
+
+.activity-filter-buttons button.selected {
+  color: var(--blue);
+  border-color: #cfe0ff;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.activity-project-filter {
+  display: grid;
+  min-width: 210px;
+  gap: 0.28rem;
+}
+
+.activity-project-filter span {
+  color: var(--text-faint);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.activity-project-filter select {
+  min-height: 34px;
+  padding-block: 0.35rem;
+  background: var(--surface);
+  font-size: 0.7rem;
+}
+
+.activity-table {
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.activity-col-project {
+  width: 250px;
+}
+
+.activity-col-commit {
+  width: 90px;
+}
+
+.activity-col-source {
+  width: 90px;
+}
+
+.activity-col-status {
+  width: 170px;
+}
+
+.activity-col-requested,
+.activity-col-finished {
+  width: 100px;
+}
+
+.activity-col-detail {
+  width: 90px;
+}
+
+.activity-table th:last-child,
+.activity-table td:last-child {
+  position: sticky;
+  z-index: 1;
+  right: 0;
+  background: var(--surface);
+  box-shadow: -10px 0 14px -14px rgb(16 24 40 / 45%);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.activity-table th:last-child {
+  z-index: 2;
+  background: var(--surface-subtle);
+}
+
+.activity-table tbody tr:hover td:last-child {
+  background: #fbfdff;
+}
+
+.activity-detail-link {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.58rem;
+  color: #344054;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  font-size: 0.67rem;
+  font-weight: 750;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.activity-detail-link:hover {
+  color: var(--blue);
+  border-color: #b8d0ff;
+  background: var(--blue-soft);
+}
+
+.activity-detail-link svg {
+  width: 15px;
+  height: 15px;
+}
+
+.activity-table .project-name {
+  width: 100%;
+  min-width: 0;
+}
+
+.activity-table .project-name div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.activity-table .project-name strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-commit,
+.activity-status-cell {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.activity-commit code {
+  color: #344054;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.activity-commit small,
+.activity-status-cell small {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  color: var(--text-faint);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-status-cell .deployment-status {
+  padding: 0.28rem 0.48rem;
+  font-size: 0.64rem;
+}
+
+.activity-source {
+  display: inline-flex;
+  width: max-content;
+  padding: 0.3rem 0.45rem;
+  color: #526176;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.activity-filter-empty {
+  min-height: 180px;
+}

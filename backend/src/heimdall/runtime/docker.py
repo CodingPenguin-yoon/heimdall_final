@@ -85,6 +85,7 @@ class DockerRuntime:
         managed_database_container: str = "heimdall-managed-postgres",
         command_timeout_seconds: float = 900,
         health_timeout_seconds: float = 60,
+        probe_host: str = "127.0.0.1",
     ) -> None:
         self._runner = runner
         self._probe = probe
@@ -92,6 +93,7 @@ class DockerRuntime:
         self._managed_database_container = managed_database_container
         self._command_timeout_seconds = command_timeout_seconds
         self._health_timeout_seconds = health_timeout_seconds
+        self._probe_host = probe_host
 
     def start_candidate(
         self,
@@ -104,7 +106,7 @@ class DockerRuntime:
         source_root = source_root.resolve(strict=True)
         self.cleanup_candidate(deployment, runtime)
         for service in runtime.services:
-            self._assert_absent("container", _container_name(deployment, service))
+            self._assert_absent("container", container_name(deployment, service))
             self._assert_absent("image", _image_name(deployment, service))
         self._assert_absent("network", _network_name(deployment))
         progress.stage(
@@ -186,7 +188,7 @@ class DockerRuntime:
             )
 
         for service in runtime.services:
-            container = _container_name(deployment, service)
+            container = container_name(deployment, service)
             self._run(
                 ["start", container],
                 progress,
@@ -197,14 +199,14 @@ class DockerRuntime:
         # Once every network endpoint has started, a second idempotent start lets it recover.
         for service in runtime.services:
             self._run(
-                ["start", _container_name(deployment, service)],
+                ["start", container_name(deployment, service)],
                 progress,
                 RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
             )
 
         running: list[RunningService] = []
         for service in runtime.services:
-            container = _container_name(deployment, service)
+            container = container_name(deployment, service)
             port_result = self._run(
                 ["port", container, f"{service.internal_port}/tcp"],
                 progress,
@@ -237,14 +239,73 @@ class DockerRuntime:
     ) -> None:
         for service, item in zip(runtime.services, candidate.services, strict=True):
             self._probe.wait_until_healthy(
-                f"http://127.0.0.1:{item.health_port}{service.health_path}",
+                f"http://{self._probe_host}:{item.health_port}{service.health_path}",
                 timeout_seconds=self._health_timeout_seconds,
                 heartbeat=progress.heartbeat,
             )
 
+    def restore_active_database_network(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        network_name: str,
+    ) -> bool:
+        if runtime.database is None or not any(
+            service.project_database_access for service in runtime.services
+        ):
+            return False
+        network_state = self._resource_state("network", network_name, deployment)
+        if network_state is _ResourceState.UNKNOWN:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        if network_state is not _ResourceState.EXACT:
+            return False
+        networks = self._managed_database_networks()
+        attached = networks.get(network_name)
+        if isinstance(attached, dict):
+            aliases = attached.get("Aliases")
+            if isinstance(aliases, list) and runtime.database.host in aliases:
+                return False
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_ALIAS_CONFLICT",
+                cleanup_candidate=False,
+            )
+        result = self._run_ignored(
+            [
+                "network",
+                "connect",
+                "--alias",
+                runtime.database.host,
+                network_name,
+                self._managed_database_container,
+            ]
+        )
+        if result.returncode != 0:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_RESTORE_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        restored = self._managed_database_networks().get(network_name)
+        aliases = restored.get("Aliases") if isinstance(restored, dict) else None
+        if not isinstance(aliases, list) or runtime.database.host not in aliases:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_RESTORE_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        return True
+
     def cleanup_candidate(self, deployment: Deployment, runtime: RuntimeDeployment) -> None:
         for service in runtime.services:
-            name = _container_name(deployment, service)
+            name = container_name(deployment, service)
             if self._is_managed("container", name, deployment.id):
                 self._run_ignored(["rm", "--force", name])
         network = _network_name(deployment)
@@ -263,7 +324,7 @@ class DockerRuntime:
         progress: RuntimeProgress,
     ) -> None:
         resources = [
-            *(("container", _container_name(deployment, service)) for service in runtime.services),
+            *(("container", container_name(deployment, service)) for service in runtime.services),
             ("network", _network_name(deployment)),
             *(("image", _image_name(deployment, service)) for service in runtime.services),
         ]
@@ -342,7 +403,7 @@ class DockerRuntime:
             return None
         services: list[RunningService] = []
         for service in runtime.services:
-            container = _container_name(deployment, service)
+            container = container_name(deployment, service)
             image = _image_name(deployment, service)
             if not self._is_managed("container", container, deployment.id, heartbeat=heartbeat):
                 return None
@@ -463,6 +524,40 @@ class DockerRuntime:
             ]
         )
 
+    def _managed_database_networks(self) -> dict:
+        result = self._run_ignored(
+            [
+                "inspect",
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+                self._managed_database_container,
+            ]
+        )
+        if result.returncode != 0:
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        try:
+            networks = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            ) from error
+        if not isinstance(networks, dict):
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        return networks
+
     def _inspect(self, kind: str, name: str, *, heartbeat: Callable[[], None] | None = None):
         if kind == "network":
             arguments = ["network", "inspect", "--format", "{{json .Labels}}", name]
@@ -483,7 +578,7 @@ class DockerRuntime:
         arguments = [
             "create",
             "--name",
-            _container_name(deployment, service),
+            container_name(deployment, service),
             "--network",
             network,
             "--network-alias",
@@ -575,7 +670,7 @@ def _network_name(deployment: Deployment) -> str:
     return f"hm-p{deployment.project_id.hex[:12]}-g{deployment.id.hex[:12]}"
 
 
-def _container_name(deployment: Deployment, service: RuntimeService) -> str:
+def container_name(deployment: Deployment, service: RuntimeService) -> str:
     return f"hm-p{deployment.project_id.hex[:12]}-{service.name}-g{deployment.id.hex[:12]}"
 
 

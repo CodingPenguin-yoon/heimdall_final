@@ -21,11 +21,10 @@ export function AppShell() {
             <Icon name="grid" />
             프로젝트
           </NavLink>
-          <span className={styles.disabledLink} aria-disabled="true">
+          <NavLink to="/deployments" className={({ isActive }) => (isActive ? styles.active : '')}>
             <Icon name="activity" />
             배포 활동
-            <small>곧 제공</small>
-          </span>
+          </NavLink>
         </nav>
 
         <div className={styles.sidebarFooter}>

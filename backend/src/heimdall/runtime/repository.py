@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -22,6 +23,8 @@ class ProjectRuntime:
 
 
 class RuntimeRepository(Protocol):
+    def list_active(self) -> Sequence[ProjectRuntime]: ...
+
     def get(self, project_id: UUID) -> ProjectRuntime | None: ...
 
     def ensure_gateway(
@@ -41,6 +44,18 @@ class RuntimeRepository(Protocol):
 class PostgresRuntimeRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    def list_active(self) -> Sequence[ProjectRuntime]:
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_runtimes
+                WHERE active_deployment_id IS NOT NULL
+                  AND active_network_name IS NOT NULL
+                ORDER BY project_id
+                """
+            ).fetchall()
+        return [_runtime(row) for row in rows]
 
     def get(self, project_id: UUID) -> ProjectRuntime | None:
         with self._database.connection() as connection:

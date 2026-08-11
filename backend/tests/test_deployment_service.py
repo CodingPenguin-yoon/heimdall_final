@@ -1,11 +1,17 @@
+from datetime import UTC, datetime
+
+import pytest
 from conftest import FakeGit, MemoryDeployments, MemoryProjects
 from test_project_schemas import valid_settings
 
+from heimdall.common.errors import AppError
+from heimdall.deployments.event_stream import DeploymentEventStreamError
 from heimdall.deployments.models import DeploymentSource
 from heimdall.deployments.schemas import DeploymentCreate
 from heimdall.deployments.service import DeploymentService
 from heimdall.projects.schemas import ProjectCreate, ProjectSettingsUpdate
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.logs import ServiceLogError, ServiceLogSnapshot
 
 
 class ActiveProjectDatabase:
@@ -21,6 +27,51 @@ class ActiveProjectDatabase:
             "credentialVersion": 1,
             "credentialFingerprint": "f" * 64,
         }
+
+
+class ServiceLogs:
+    def __init__(self, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.requests = []
+
+    def fetch(self, deployment_id, service_name):
+        self.requests.append((deployment_id, service_name))
+        if self.error_code is not None:
+            raise ServiceLogError(self.error_code)
+        return ServiceLogSnapshot(
+            deployment_id=deployment_id,
+            services=("web", "api"),
+            service_name=service_name or "web",
+            retrieved_at=datetime(2026, 8, 7, 1, tzinfo=UTC),
+            lines=(),
+            truncated=False,
+        )
+
+
+class ServiceLogStreams:
+    def __init__(self, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.requests = []
+        self.subscription = object()
+
+    def open(self, deployment_id, service_name):
+        self.requests.append((deployment_id, service_name))
+        if self.error_code is not None:
+            raise ServiceLogError(self.error_code)
+        return self.subscription
+
+
+class DeploymentEventStreams:
+    def __init__(self, error_code: str | None = None) -> None:
+        self.error_code = error_code
+        self.requests = []
+        self.subscription = object()
+
+    def open(self, deployment_id, after_id):
+        self.requests.append((deployment_id, after_id))
+        if self.error_code is not None:
+            raise DeploymentEventStreamError(self.error_code)
+        return self.subscription
 
 
 def ready_project() -> tuple[ProjectService, object]:
@@ -79,3 +130,135 @@ def test_database_metadata_is_frozen_into_deployment_snapshot() -> None:
 
     assert deployment.config_snapshot["managedDatabase"]["databaseName"] == "hd_db_one"
     assert "password" not in str(deployment.config_snapshot).lower()
+
+
+def test_service_logs_are_requested_only_after_deployment_lookup() -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    logs = ServiceLogs()
+    service = DeploymentService(repository, projects, service_logs=logs)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    snapshot = service.service_logs(deployment.id, "api")
+
+    assert snapshot.service_name == "api"
+    assert logs.requests == [(deployment.id, "api")]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "status"),
+    [
+        ("SERVICE_LOG_SERVICE_NOT_FOUND", 400),
+        ("SERVICE_LOGS_UNAVAILABLE", 409),
+        ("RUNTIME_LOG_BROKER_UNAVAILABLE", 503),
+        ("SERVICE_LOG_REDACTION_UNAVAILABLE", 503),
+        ("UNKNOWN_BROKER_ERROR", 503),
+    ],
+)
+def test_service_log_failures_map_to_stable_http_errors(error_code: str, status: int) -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    logs = ServiceLogs(error_code)
+    service = DeploymentService(repository, projects, service_logs=logs)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    with pytest.raises(AppError) as raised:
+        service.service_logs(deployment.id, None)
+
+    assert raised.value.status == status
+    assert raised.value.code == (
+        error_code if error_code != "UNKNOWN_BROKER_ERROR" else "RUNTIME_LOG_BROKER_UNAVAILABLE"
+    )
+
+
+def test_service_log_stream_is_opened_only_after_deployment_lookup() -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = ServiceLogStreams()
+    service = DeploymentService(repository, projects, service_log_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    subscription = service.open_service_log_stream(deployment.id, "api")
+
+    assert subscription is streams.subscription
+    assert streams.requests == [(deployment.id, "api")]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_code"),
+    [
+        ("RUNTIME_LOG_STREAM_BUSY", "RUNTIME_LOG_STREAM_BUSY"),
+        ("RUNTIME_LOG_STREAM_UNAVAILABLE", "RUNTIME_LOG_STREAM_UNAVAILABLE"),
+        ("UNKNOWN_STREAM_ERROR", "RUNTIME_LOG_STREAM_UNAVAILABLE"),
+    ],
+)
+def test_service_log_stream_failures_map_to_stable_http_errors(
+    error_code: str,
+    expected_code: str,
+) -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = ServiceLogStreams(error_code)
+    service = DeploymentService(repository, projects, service_log_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    with pytest.raises(AppError) as raised:
+        service.open_service_log_stream(deployment.id, None)
+
+    assert raised.value.status == 503
+    assert raised.value.code == expected_code
+
+
+def test_deployment_event_stream_is_opened_after_lookup_with_cursor() -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = DeploymentEventStreams()
+    service = DeploymentService(repository, projects, deployment_event_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    subscription = service.open_event_stream(deployment.id, 17)
+
+    assert subscription is streams.subscription
+    assert streams.requests == [(deployment.id, 17)]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_code"),
+    [
+        ("DEPLOYMENT_EVENT_STREAM_BUSY", "DEPLOYMENT_EVENT_STREAM_BUSY"),
+        ("UNKNOWN_STREAM_ERROR", "DEPLOYMENT_EVENT_STREAM_UNAVAILABLE"),
+    ],
+)
+def test_deployment_event_stream_failures_map_to_stable_http_errors(
+    error_code: str,
+    expected_code: str,
+) -> None:
+    projects, project = ready_project()
+    repository = MemoryDeployments()
+    streams = DeploymentEventStreams(error_code)
+    service = DeploymentService(repository, projects, deployment_event_stream=streams)
+    deployment = service.request(
+        project.id,
+        DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+    )
+
+    with pytest.raises(AppError) as raised:
+        service.open_event_stream(deployment.id, 0)
+
+    assert raised.value.status == 503
+    assert raised.value.code == expected_code

@@ -32,6 +32,32 @@ export interface DeploymentEvent {
   createdAt: string;
 }
 
+export interface ServiceLogLine {
+  timestamp: string;
+  stream: 'STDOUT' | 'STDERR';
+  message: string;
+}
+
+export interface ServiceLogSnapshot {
+  deploymentId: string;
+  services: string[];
+  serviceName: string;
+  retrievedAt: string;
+  lines: ServiceLogLine[];
+  truncated: boolean;
+}
+
+export interface ServiceLogStreamReady {
+  deploymentId: string;
+  services: string[];
+  serviceName: string;
+  connectedAt: string;
+}
+
+export interface ServiceLogStreamLine extends ServiceLogLine {
+  truncated: boolean;
+}
+
 export type RuntimeReconciliationAction = 'RECONCILE' | 'FORCE_CLEANUP';
 
 export interface RuntimeReconciliation {
