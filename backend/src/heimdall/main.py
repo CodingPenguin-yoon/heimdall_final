@@ -64,11 +64,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             projects,
             project_databases,
             UnixServiceLogBrokerClient(
-                service_log_socket_path(app_settings.runtime_root),
+                service_log_socket_path(app_settings.broker_socket_root),
                 timeout_seconds=app_settings.service_log_broker_timeout_seconds,
             ),
             UnixServiceLogStreamBrokerClient(
-                service_log_stream_socket_path(app_settings.runtime_root),
+                service_log_stream_socket_path(app_settings.broker_socket_root),
                 handshake_timeout_seconds=app_settings.service_log_broker_timeout_seconds,
             ),
             PostgresDeploymentEventStreamGateway(database, deployment_repository),

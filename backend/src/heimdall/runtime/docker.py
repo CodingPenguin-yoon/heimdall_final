@@ -85,6 +85,7 @@ class DockerRuntime:
         managed_database_container: str = "heimdall-managed-postgres",
         command_timeout_seconds: float = 900,
         health_timeout_seconds: float = 60,
+        probe_host: str = "127.0.0.1",
     ) -> None:
         self._runner = runner
         self._probe = probe
@@ -92,6 +93,7 @@ class DockerRuntime:
         self._managed_database_container = managed_database_container
         self._command_timeout_seconds = command_timeout_seconds
         self._health_timeout_seconds = health_timeout_seconds
+        self._probe_host = probe_host
 
     def start_candidate(
         self,
@@ -237,10 +239,69 @@ class DockerRuntime:
     ) -> None:
         for service, item in zip(runtime.services, candidate.services, strict=True):
             self._probe.wait_until_healthy(
-                f"http://127.0.0.1:{item.health_port}{service.health_path}",
+                f"http://{self._probe_host}:{item.health_port}{service.health_path}",
                 timeout_seconds=self._health_timeout_seconds,
                 heartbeat=progress.heartbeat,
             )
+
+    def restore_active_database_network(
+        self,
+        deployment: Deployment,
+        runtime: RuntimeDeployment,
+        network_name: str,
+    ) -> bool:
+        if runtime.database is None or not any(
+            service.project_database_access for service in runtime.services
+        ):
+            return False
+        network_state = self._resource_state("network", network_name, deployment)
+        if network_state is _ResourceState.UNKNOWN:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        if network_state is not _ResourceState.EXACT:
+            return False
+        networks = self._managed_database_networks()
+        attached = networks.get(network_name)
+        if isinstance(attached, dict):
+            aliases = attached.get("Aliases")
+            if isinstance(aliases, list) and runtime.database.host in aliases:
+                return False
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_ALIAS_CONFLICT",
+                cleanup_candidate=False,
+            )
+        result = self._run_ignored(
+            [
+                "network",
+                "connect",
+                "--alias",
+                runtime.database.host,
+                network_name,
+                self._managed_database_container,
+            ]
+        )
+        if result.returncode != 0:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_RESTORE_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        restored = self._managed_database_networks().get(network_name)
+        aliases = restored.get("Aliases") if isinstance(restored, dict) else None
+        if not isinstance(aliases, list) or runtime.database.host not in aliases:
+            raise RuntimeFailure(
+                "DOCKER",
+                "ACTIVE_DATABASE_NETWORK_RESTORE_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        return True
 
     def cleanup_candidate(self, deployment: Deployment, runtime: RuntimeDeployment) -> None:
         for service in runtime.services:
@@ -462,6 +523,40 @@ class DockerRuntime:
                 self._managed_database_container,
             ]
         )
+
+    def _managed_database_networks(self) -> dict:
+        result = self._run_ignored(
+            [
+                "inspect",
+                "--format",
+                "{{json .NetworkSettings.Networks}}",
+                self._managed_database_container,
+            ]
+        )
+        if result.returncode != 0:
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        try:
+            networks = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            ) from error
+        if not isinstance(networks, dict):
+            raise RuntimeFailure(
+                "DOCKER",
+                "MANAGED_DATABASE_OBSERVATION_FAILED",
+                retryable=True,
+                cleanup_candidate=False,
+            )
+        return networks
 
     def _inspect(self, kind: str, name: str, *, heartbeat: Callable[[], None] | None = None):
         if kind == "network":

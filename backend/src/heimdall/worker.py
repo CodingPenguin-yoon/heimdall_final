@@ -26,6 +26,7 @@ from heimdall.runtime.log_stream_broker import (
     service_log_stream_socket_path,
 )
 from heimdall.runtime.logs import ServiceLogError
+from heimdall.runtime.models import RuntimeConfigurationError, RuntimeDeployment
 from heimdall.runtime.process import SubprocessCommandRunner
 from heimdall.runtime.process_stream import SubprocessCommandStreamRunner
 from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
@@ -35,6 +36,29 @@ from heimdall.runtime.service import DockerDeploymentProcessor
 from heimdall.secrets.store import FileSecretStore
 
 logger = logging.getLogger(__name__)
+
+
+def restore_active_database_networks(deployments, runtimes, docker) -> int:
+    restored_count = 0
+    for stored in runtimes.list_active():
+        if stored.active_deployment_id is None or stored.active_network_name is None:
+            continue
+        try:
+            deployment = deployments.get(stored.active_deployment_id)
+            runtime = RuntimeDeployment.from_deployment(deployment)
+        except (DeploymentNotFoundError, RuntimeConfigurationError):
+            logger.warning(
+                "active runtime database network could not be restored from stored metadata",
+                extra={"project_id": str(stored.project_id)},
+            )
+            continue
+        if docker.restore_active_database_network(
+            deployment,
+            runtime,
+            stored.active_network_name,
+        ):
+            restored_count += 1
+    return restored_count
 
 
 def run(settings: Settings | None = None, stop: Event | None = None) -> None:
@@ -65,7 +89,11 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             managed_database_container=app_settings.managed_database_container,
             command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
             health_timeout_seconds=app_settings.runtime_health_timeout_seconds,
+            probe_host=app_settings.runtime_probe_host,
         )
+        restored_networks = restore_active_database_networks(deployments, runtimes, docker)
+        if restored_networks:
+            logger.info("restored %s active managed database network(s)", restored_networks)
         log_reader = DockerServiceLogReader(
             runner,
             secret_store,
@@ -95,7 +123,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             return log_streamer.open(deployment, service_name)
 
         candidate_broker = UnixServiceLogBrokerServer(
-            service_log_socket_path(app_settings.runtime_root),
+            service_log_socket_path(app_settings.broker_socket_root),
             read_service_logs,
         )
         try:
@@ -108,7 +136,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
         else:
             log_broker = candidate_broker
         candidate_stream_broker = UnixServiceLogStreamBrokerServer(
-            service_log_stream_socket_path(app_settings.runtime_root),
+            service_log_stream_socket_path(app_settings.broker_socket_root),
             stream_service_logs,
         )
         try:
@@ -129,6 +157,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             docker_executable=app_settings.docker_executable,
             image=app_settings.nginx_image,
             command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
+            probe_host=app_settings.runtime_probe_host,
         )
         processor = DockerDeploymentProcessor(
             projects,

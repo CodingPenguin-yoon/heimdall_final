@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+PROBE_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
     runtime_root: Path
+    broker_socket_root: Path
+    runtime_probe_host: str
     git_executable: str
     git_workspace_root: Path
     git_timeout_seconds: float
@@ -34,14 +39,23 @@ class Settings:
         workspace = Path(
             os.environ.get("HEIMDALL_GIT_WORKSPACE_ROOT", "/tmp/heimdall-python-git")
         ).resolve()
+        runtime_root = Path(
+            os.environ.get("HEIMDALL_RUNTIME_ROOT", "/tmp/heimdall-python-runtime")
+        ).resolve()
+        broker_socket_root = Path(
+            os.environ.get("HEIMDALL_BROKER_SOCKET_ROOT", str(runtime_root))
+        ).resolve()
+        runtime_probe_host = os.environ.get("HEIMDALL_RUNTIME_PROBE_HOST", "127.0.0.1")
+        if not PROBE_HOST.fullmatch(runtime_probe_host):
+            raise ValueError("HEIMDALL_RUNTIME_PROBE_HOST must be a hostname or IPv4 address")
         return cls(
             database_url=os.environ.get(
                 "HEIMDALL_DATABASE_URL",
                 "postgresql://heimdall:change-me@127.0.0.1:55432/heimdall",
             ),
-            runtime_root=Path(
-                os.environ.get("HEIMDALL_RUNTIME_ROOT", "/tmp/heimdall-python-runtime")
-            ).resolve(),
+            runtime_root=runtime_root,
+            broker_socket_root=broker_socket_root,
+            runtime_probe_host=runtime_probe_host,
             git_executable=os.environ.get("HEIMDALL_GIT_EXECUTABLE", "git"),
             git_workspace_root=workspace,
             git_timeout_seconds=float(os.environ.get("HEIMDALL_GIT_TIMEOUT_SECONDS", "20")),

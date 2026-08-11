@@ -36,6 +36,7 @@ class NginxGatewayActivator:
         image: str = "nginx:1.29-alpine",
         command_timeout_seconds: float = 120,
         route_timeout_seconds: float = 10,
+        probe_host: str = "127.0.0.1",
     ) -> None:
         self._repository = repository
         self._docker = docker
@@ -46,6 +47,7 @@ class NginxGatewayActivator:
         self._image = image
         self._command_timeout_seconds = command_timeout_seconds
         self._route_timeout_seconds = route_timeout_seconds
+        self._probe_host = probe_host
 
     def is_active(self, deployment: Deployment) -> bool:
         current = self._repository.get(deployment.project_id)
@@ -89,7 +91,7 @@ class NginxGatewayActivator:
         except (RuntimeError, RuntimeFailure):
             return RecoveryDisposition.UNCERTAIN
         observation = self._probe.observe(
-            f"http://127.0.0.1:{stored.preview_port}/",
+            self._preview_url(stored.preview_port, "/"),
             timeout_seconds=self._route_timeout_seconds,
             heartbeat=progress.heartbeat,
         )
@@ -107,7 +109,7 @@ class NginxGatewayActivator:
                 self._docker.verify_candidate(runtime, candidate, progress)
                 for route in runtime.routes:
                     self._probe.probe(
-                        f"http://127.0.0.1:{stored.preview_port}{route.path}",
+                        self._preview_url(stored.preview_port, route.path),
                         timeout_seconds=self._route_timeout_seconds,
                         heartbeat=progress.heartbeat,
                     )
@@ -457,10 +459,13 @@ class NginxGatewayActivator:
     ) -> None:
         for route in runtime.routes:
             self._probe.probe(
-                f"http://127.0.0.1:{preview_port}{route.path}",
+                self._preview_url(preview_port, route.path),
                 timeout_seconds=self._route_timeout_seconds,
                 heartbeat=progress.heartbeat,
             )
+
+    def _preview_url(self, preview_port: int, path: str) -> str:
+        return f"http://{self._probe_host}:{preview_port}{path}"
 
     def _connect_gateway(
         self, network_name: str, gateway_name: str, progress: RuntimeProgress
@@ -556,7 +561,7 @@ class NginxGatewayActivator:
         if not self._restore_target_file(deployment, gateway_name, progress, reload=True):
             return False
         observation = self._probe.observe(
-            f"http://127.0.0.1:{stored.preview_port}/",
+            self._preview_url(stored.preview_port, "/"),
             timeout_seconds=self._route_timeout_seconds,
             heartbeat=progress.heartbeat,
         )

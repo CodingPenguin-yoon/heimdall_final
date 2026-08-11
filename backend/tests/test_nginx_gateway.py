@@ -323,6 +323,27 @@ def test_gateway_activates_candidate_and_persists_stable_preview(tmp_path: Path)
     assert f'add_header X-Heimdall-Deployment-Id "{item.id}" always;' in config
 
 
+def test_gateway_uses_configured_host_for_preview_probe(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    repository = MemoryRuntimes()
+    docker = GatewayDocker()
+    runner = GatewayRunner()
+    route = HealthyRoute()
+    activator = NginxGatewayActivator(
+        repository,
+        docker,
+        runner,
+        route,
+        tmp_path / "gateways",
+        probe_host="host.docker.internal",
+    )
+
+    activator.activate(item, runtime, candidate(), Progress())
+
+    assert route.urls == ["http://host.docker.internal:48080/"]
+
+
 def test_failed_route_probe_restores_last_known_good_config(tmp_path: Path) -> None:
     item = runtime_deployment()
     runtime = RuntimeDeployment.from_deployment(item)

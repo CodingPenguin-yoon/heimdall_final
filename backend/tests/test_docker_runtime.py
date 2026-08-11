@@ -112,6 +112,38 @@ class UnavailableCleanupRunner(RecordingRunner):
         return CommandResult(0, "")
 
 
+class RecreatedManagedDatabaseRunner(RecordingRunner):
+    def __init__(self, project_id: str, deployment_id: str, network_name: str) -> None:
+        super().__init__(deployment_id)
+        self.project_id = project_id
+        self.network_name = network_name
+        self.connected = False
+
+    def run(self, arguments, *, timeout_seconds, heartbeat=None, check=True) -> CommandResult:
+        values = list(arguments)
+        self.calls.append((values, check))
+        if values[1:3] == ["network", "inspect"]:
+            return CommandResult(
+                0,
+                json.dumps(
+                    {
+                        "heimdall.managed": "true",
+                        "heimdall.project-id": self.project_id,
+                        "heimdall.deployment-id": self.managed_deployment_id,
+                    }
+                ),
+            )
+        if values[1] == "inspect" and "{{json .NetworkSettings.Networks}}" in values:
+            networks = (
+                {self.network_name: {"Aliases": ["managed-postgres"]}} if self.connected else {}
+            )
+            return CommandResult(0, json.dumps(networks))
+        if values[1:3] == ["network", "connect"]:
+            self.connected = True
+            return CommandResult(0, "")
+        return CommandResult(0, "")
+
+
 class RecordingProbe:
     def __init__(self) -> None:
         self.urls: list[str] = []
@@ -192,6 +224,48 @@ def test_docker_candidate_uses_file_mounts_and_service_scoped_managed_values(
     assert candidate.services[0].health_port == 49152
     assert probe.urls == ["http://127.0.0.1:49152/health"]
     assert progress.stages == ["BUILDING", "STARTING", "HEALTH_CHECKING"]
+
+
+def test_docker_candidate_uses_configured_host_for_health_probe(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    secrets = FilePaths(tmp_path)
+    database = runtime.database
+    assert database is not None
+    secrets.add(runtime.services[0].secrets[0].reference, "user-secret-canary")
+    secrets.add(database.credential_reference, "database-secret-canary")
+    probe = RecordingProbe()
+
+    DockerRuntime(RecordingRunner(), probe, probe_host="host.docker.internal").start_candidate(
+        item, runtime, source, secrets, RecordingProgress()
+    )
+
+    assert probe.urls == ["http://host.docker.internal:49152/health"]
+
+
+def test_active_database_network_is_restored_after_managed_container_recreation() -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    network_name = f"hm-p{item.project_id.hex[:12]}-g{item.id.hex[:12]}"
+    runner = RecreatedManagedDatabaseRunner(str(item.project_id), str(item.id), network_name)
+
+    restored = DockerRuntime(runner, RecordingProbe()).restore_active_database_network(
+        item, runtime, network_name
+    )
+
+    assert restored is True
+    assert [
+        "docker",
+        "network",
+        "connect",
+        "--alias",
+        "managed-postgres",
+        network_name,
+        "heimdall-managed-postgres",
+    ] in [call[0] for call in runner.calls]
 
 
 def test_candidate_creates_all_containers_and_retries_start_before_port_lookup(

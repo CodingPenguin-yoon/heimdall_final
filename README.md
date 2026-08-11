@@ -35,10 +35,83 @@ project-docs/  제품·아키텍처·구현 기준
 infra/         로컬 외부 상태
 ```
 
-## Backend
+## Local Docker Compose
+
+기본 로컬 실행은 Docker Desktop의 통합 Compose를 사용한다. Control/Managed PostgreSQL, FastAPI API,
+deployment Worker와 production frontend를 함께 시작하며 API·Worker·frontend는 종료 시 자동
+재시작된다.
+
+```bash
+cp .env.example .env
+# .env의 password와 HEIMDALL_RUNTIME_ROOT, HEIMDALL_GIT_WORKSPACE_ROOT를 설정한다.
+docker compose --env-file .env -f infra/dev/compose.yaml up -d --build --wait
+docker compose --env-file .env -f infra/dev/compose.yaml ps
+```
+
+- UI: `http://127.0.0.1:5173`
+- API health: `http://127.0.0.1:8000/api/health`
+- API·Worker·frontend와 DB 로그:
+  `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`
+
+Compose project 이름은 `heimdall-python-local`로 고정하며 기존 Control/Managed PostgreSQL named
+volume을 재사용한다. `HEIMDALL_RUNTIME_ROOT`와 `HEIMDALL_GIT_WORKSPACE_ROOT`는 host와 Worker
+container에서 같은 절대 경로로 bind해 Worker가 host Docker daemon에 넘기는 build·secret·NGINX
+mount source를 유지한다. service-log Unix socket은 별도 `broker-sockets` volume에서 API와 Worker만
+공유한다.
+
+Docker socket은 Worker에만 mount한다. API와 frontend에는 전달하지 않는다. Worker는 Docker
+Desktop의 `host.docker.internal`로 loopback publish된 candidate health와 stable preview를 검증한다.
+Managed PostgreSQL container가 재생성돼 active generation network 연결이 사라지면 Worker 시작 시
+Control DB의 exact active deployment/network label을 확인한 뒤 DB 사용 network의
+`managed-postgres` alias만 복원한다.
+
+개발 데이터를 유지하려면 `docker compose down -v`를 실행하지 않는다. Compose 실행 중에는 아래
+host API·Worker·Vite 명령을 같은 포트에서 동시에 실행하지 않는다.
+
+### 운영 중지와 재시작
+
+잠시 중지할 때는 container와 network를 삭제하는 `down` 대신 `stop`을 사용한다.
+
+```bash
+# 배포된 project와 Managed PostgreSQL은 유지하고 Control Plane만 중지
+docker compose --env-file .env -f infra/dev/compose.yaml \
+  stop frontend api worker control-postgres
+
+# 전체 local stack 중지. Managed PostgreSQL도 멈추므로 DB 사용 project는 그동안 실패한다.
+docker compose --env-file .env -f infra/dev/compose.yaml stop
+
+# 기존 container를 다시 시작하고 health를 기다린다.
+docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
+```
+
+`docker compose ... down`은 Compose container와 기본 network를 삭제하지만 `-v`가 없으면 PostgreSQL
+named volume은 보존한다. 다음 `up`에서 Managed PostgreSQL container가 재생성되면 Worker가 DB를
+사용하는 exact active generation network 연결을 복원한다. `down -v`는 Control/Managed PostgreSQL
+volume까지 삭제하므로 개발 데이터를 의도적으로 초기화할 때만 사용한다.
+
+### 장애 영향
+
+| 중단 대상 | 기존 배포 project | 관리 기능 |
+| --- | --- | --- |
+| frontend | Preview에는 영향 없음 | 관리 UI만 사용할 수 없음 |
+| API | Preview에는 영향 없음 | API와 관리 UI를 사용할 수 없음 |
+| Worker | 실행 중 service와 gateway는 유지 | 새 배포, reconciliation과 service log broker가 멈춤 |
+| Control PostgreSQL | 실행 중 project는 Managed DB가 살아 있으면 유지 | API와 Worker가 상태를 읽거나 갱신할 수 없음 |
+| Managed PostgreSQL | DB 미사용 project는 유지 | DB 사용 project의 application 요청이 실패 |
+| Docker daemon | project service, gateway와 local Compose container가 함께 영향받음 | Docker 복구 뒤 기존 container의 restart policy에 따라 재시작 |
+
+성공한 project service와 project별 NGINX gateway는 Control Plane과 별도 container이며
+`unless-stopped` restart policy를 가진다. 따라서 API나 Worker process만 종료돼도 기존 Preview는
+계속 동작한다. 현재 Managed PostgreSQL은 같은 local Compose가 소유하므로 Control Plane 전체와
+Managed DB의 장애 영역은 완전히 분리돼 있지 않다.
+
+## Host Backend 개발 (선택)
 
 ```bash
 cd backend
+set -a
+source ../.env
+set +a
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff format --check .
@@ -63,7 +136,7 @@ live stream은 각각 최대 4개 처리 슬롯을 사용해 장시간 SSE 연�
 구조화 deployment event SSE도 최대 4개의 PostgreSQL LISTEN 연결만 사용해 API pool 8개 중 일반
 요청용 연결을 남긴다.
 
-## Frontend
+## Host Frontend 개발 (선택)
 
 ```bash
 cd frontend
@@ -77,14 +150,10 @@ pnpm dev
 `pnpm e2e`는 local Vite server와 mock API를 사용해 관리자 runtime 복구 화면을 실제
 Chromium에서 검증한다.
 
-## Local PostgreSQL
+## PostgreSQL data와 release smoke
 
-개발 Compose는 Control PostgreSQL과 Managed Project PostgreSQL을 별도 volume으로 실행한다. `.env`의 provisioner password와 `HEIMDALL_PROJECT_DB_ADMIN_URL` password는 같은 값이어야 한다.
-
-```bash
-cp .env.example .env
-docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
-```
+통합 Compose는 Control PostgreSQL과 Managed Project PostgreSQL을 별도 volume으로 실행한다.
+`.env`의 provisioner password와 `HEIMDALL_PROJECT_DB_ADMIN_URL` password는 같은 값이어야 한다.
 
 실제 PostgreSQL·Docker·NGINX release smoke는 명시적으로 opt-in한다. 아래 URL의 password는
 로컬 `.env`에 설정한 test 전용 값과 맞춰야 한다.
