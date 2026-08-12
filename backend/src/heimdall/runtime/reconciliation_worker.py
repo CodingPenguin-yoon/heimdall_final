@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import UUID
 
 from heimdall.common.errors import AppError
+from heimdall.deployments.diagnostics import DiagnosticArtifactDraft
 from heimdall.deployments.models import Deployment
 from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure
 from heimdall.runtime.reconciliation import (
@@ -22,6 +23,12 @@ class ReconciliationProcessor(Protocol):
 
     def cleanup_candidate_verified(self, deployment: Deployment, progress) -> None: ...
 
+    def prepare_reconciliation_cleanup(self, deployment: Deployment, progress) -> None: ...
+
+    def capture_diagnostics(
+        self, deployment: Deployment, failure: RuntimeFailure, progress
+    ) -> tuple[DiagnosticArtifactDraft, ...]: ...
+
 
 class ReconciliationDeployments(Protocol):
     def list_uncertain_before(self, cutoff: datetime) -> Sequence[Deployment]: ...
@@ -29,6 +36,16 @@ class ReconciliationDeployments(Protocol):
     def get(self, deployment_id: UUID) -> Deployment: ...
 
     def reconcile_succeeded(self, deployment_id: UUID) -> Deployment: ...
+
+    def record_reconciliation_diagnostics(
+        self,
+        deployment_id: UUID,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ): ...
 
 
 class ReconciliationProgress:
@@ -58,6 +75,7 @@ class RuntimeReconciliationWorker:
         retention_duration: timedelta,
         max_attempts: int = 3,
         retry_base_delay: timedelta = timedelta(seconds=5),
+        diagnostic_retention: timedelta | None = None,
     ) -> None:
         if not worker_id or len(worker_id) > 128:
             raise ValueError("worker_id must be between 1 and 128 characters")
@@ -67,6 +85,8 @@ class RuntimeReconciliationWorker:
             raise ValueError("retention duration must be positive")
         if max_attempts < 1:
             raise ValueError("max attempts must be positive")
+        if diagnostic_retention is not None and diagnostic_retention <= timedelta(0):
+            raise ValueError("diagnostic retention must be positive")
         self._repository = repository
         self._deployments = deployments
         self._processor = processor
@@ -75,6 +95,7 @@ class RuntimeReconciliationWorker:
         self._retention_duration = retention_duration
         self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
+        self._diagnostic_retention = diagnostic_retention
 
     def run_once(self) -> bool:
         now = datetime.now(UTC)
@@ -106,6 +127,11 @@ class RuntimeReconciliationWorker:
                 )
                 return True
             if disposition is RecoveryDisposition.SAFE_TO_RETRY:
+                self._capture_before_cleanup(
+                    deployment,
+                    progress,
+                    "INACTIVE_CANDIDATE_CLEANUP",
+                )
                 self._processor.cleanup_candidate_verified(deployment, progress)
                 progress.heartbeat()
                 self._repository.resolve(
@@ -115,6 +141,11 @@ class RuntimeReconciliationWorker:
                 )
                 return True
             if claim.reconciliation.action is ReconciliationAction.FORCE_CLEANUP:
+                self._capture_before_cleanup(
+                    deployment,
+                    progress,
+                    "FORCED_CANDIDATE_CLEANUP",
+                )
                 self._processor.cleanup_candidate_verified(deployment, progress)
                 progress.heartbeat()
                 self._repository.resolve(
@@ -141,6 +172,39 @@ class RuntimeReconciliationWorker:
                 ),
             )
         return True
+
+    def _capture_before_cleanup(
+        self,
+        deployment: Deployment,
+        progress: ReconciliationProgress,
+        failure_code: str,
+    ) -> None:
+        if self._diagnostic_retention is None:
+            return
+        try:
+            self._processor.prepare_reconciliation_cleanup(deployment, progress)
+        except ReconciliationClaimLostError:
+            raise
+        except Exception:
+            return
+        try:
+            failure = RuntimeFailure(
+                "RECONCILIATION",
+                failure_code,
+                cleanup_candidate=False,
+            )
+            artifacts = self._processor.capture_diagnostics(deployment, failure, progress)
+            self._deployments.record_reconciliation_diagnostics(
+                deployment.id,
+                failure_stage=failure.stage,
+                failure_code=failure.code,
+                artifacts=artifacts,
+                retention=self._diagnostic_retention,
+            )
+        except ReconciliationClaimLostError:
+            raise
+        except Exception:
+            return
 
     def _handle_failure(self, claim: RuntimeReconciliationClaim, failure: RuntimeFailure) -> None:
         try:

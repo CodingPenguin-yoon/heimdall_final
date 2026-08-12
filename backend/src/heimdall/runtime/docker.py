@@ -12,6 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import UUID
 
+from heimdall.deployments.diagnostics import FailedCommandOutput
 from heimdall.deployments.models import Deployment, DeploymentStatus
 from heimdall.deployments.worker import RuntimeFailure, RuntimeProgress
 from heimdall.runtime.models import RuntimeDatabase, RuntimeDeployment, RuntimeService
@@ -133,6 +134,7 @@ class DockerRuntime:
                 ],
                 progress,
                 RuntimeFailure("BUILD", "IMAGE_BUILD_FAILED"),
+                service_name=service.name,
             )
 
         network = _network_name(deployment)
@@ -185,6 +187,7 @@ class DockerRuntime:
                 arguments,
                 progress,
                 RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
+                service_name=service.name,
             )
 
         for service in runtime.services:
@@ -193,6 +196,7 @@ class DockerRuntime:
                 ["start", container],
                 progress,
                 RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
+                service_name=service.name,
             )
 
         # A service may exit during the first pass if it resolves another service at startup.
@@ -202,6 +206,7 @@ class DockerRuntime:
                 ["start", container_name(deployment, service)],
                 progress,
                 RuntimeFailure("START", "SERVICE_START_FAILED", retryable=True),
+                service_name=service.name,
             )
 
         running: list[RunningService] = []
@@ -211,6 +216,7 @@ class DockerRuntime:
                 ["port", container, f"{service.internal_port}/tcp"],
                 progress,
                 RuntimeFailure("START", "HEALTH_PORT_UNAVAILABLE"),
+                service_name=service.name,
             )
             health_port = _published_port(port_result.stdout)
             running.append(
@@ -633,6 +639,8 @@ class DockerRuntime:
         arguments: list[str],
         progress: RuntimeProgress,
         failure: RuntimeFailure | None = None,
+        *,
+        service_name: str | None = None,
     ):
         try:
             return self._runner.run(
@@ -642,7 +650,21 @@ class DockerRuntime:
             )
         except CommandExecutionError as error:
             resolved = failure or RuntimeFailure("DOCKER", "DOCKER_COMMAND_FAILED", retryable=True)
-            raise resolved from error
+            raise RuntimeFailure(
+                resolved.stage,
+                resolved.code,
+                resolved.retryable,
+                resolved.cleanup_candidate,
+                FailedCommandOutput(
+                    operation=_safe_docker_operation(arguments),
+                    return_code=error.result.returncode,
+                    stdout=error.result.stdout,
+                    stderr=error.result.stderr,
+                    stdout_truncated=error.result.stdout_truncated,
+                    stderr_truncated=error.result.stderr_truncated,
+                    service_name=service_name,
+                ),
+            ) from error
 
     def _run_ignored(self, arguments: list[str], *, heartbeat: Callable[[], None] | None = None):
         try:
@@ -664,6 +686,29 @@ def _build_paths(source_root: Path, service: RuntimeService) -> tuple[Path, Path
     if not dockerfile.is_relative_to(context) or not dockerfile.is_file():
         raise RuntimeFailure("SOURCE", "DOCKERFILE_INVALID")
     return context, dockerfile
+
+
+def _safe_docker_operation(arguments: list[str]) -> str:
+    if not arguments:
+        return "DOCKER_COMMAND"
+    primary = arguments[0].upper().replace("-", "_")
+    if primary in {"NETWORK", "IMAGE"} and len(arguments) > 1:
+        secondary = arguments[1].upper().replace("-", "_")
+        if secondary in {"CREATE", "CONNECT", "DISCONNECT", "INSPECT", "RM"}:
+            return f"DOCKER_{primary}_{secondary}"
+    if primary in {
+        "BUILD",
+        "CREATE",
+        "EXEC",
+        "INSPECT",
+        "PORT",
+        "RM",
+        "RUN",
+        "START",
+        "UPDATE",
+    }:
+        return f"DOCKER_{primary}"
+    return "DOCKER_COMMAND"
 
 
 def _network_name(deployment: Deployment) -> str:

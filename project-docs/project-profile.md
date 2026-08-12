@@ -56,9 +56,13 @@
 - 구조화 deployment event는 raw application output 없이 Control DB에 저장하고, 초기 snapshot 뒤
   PostgreSQL LISTEN/NOTIFY wake-up과 durable event ID cursor 기반 SSE로 전달한다. 별도 서비스 로그
   snapshot과 SSE live follow는 Worker가 exact container label을 확인하고 알려진 secret을 fail-closed
-  마스킹한 뒤 service당 최근 200줄 buffer로만 제공한다. snapshot과 stream capacity를 분리하고
-  disconnect 시 Docker follow를 정리하며 로그를 저장하지 않는다. 로그 화면의 일시정지는 stream을
-  끊지 않고 자동 스크롤만 멈추며 새 line 수를 표시한다.
+  마스킹한 뒤 service당 최근 200줄 buffer로 제공한다. 일반 snapshot/live stream은 저장하지 않는다.
+  배포 실패에 한해서 cleanup 전에 command 출력과 service별 최근 로그를 256KiB artifact로 제한해
+  별도 Control DB table에 기본 30일 저장한다. 마스킹을 준비하지 못하면 원문 대신 stable 수집 실패
+  metadata만 남긴다. snapshot과 stream capacity를 분리하고 disconnect 시 Docker follow를 정리한다.
+  배포 상세의 단일 서비스 로그 영역은 일반 배포에서는 live stream을, 실패 배포에서는 저장된
+  command/service artifact 또는 수집 실패 이유를 보여준다. live 로그 일시정지는 stream을 끊지 않고
+  자동 스크롤만 멈추며 새 line 수를 표시한다.
 - service별 사용자 환경변수와 project database 접근 여부를 설정한다.
 - 사용자 환경변수와 Heimdall 예약 `DATABASE_*`, `HEIMDALL_*` 값을 배포 시 합성한다.
 - project database password와 사용자 secret은 Heimdall이 관리하며 API·Control DB·deployment snapshot에 raw 값을 남기지 않는다.

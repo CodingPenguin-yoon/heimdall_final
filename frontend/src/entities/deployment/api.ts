@@ -2,6 +2,8 @@ import { requestJson } from '@/shared/api/client';
 
 import type {
   Deployment,
+  DeploymentDiagnostic,
+  DeploymentDiagnosticMetadata,
   DeploymentEvent,
   RuntimeReconciliation,
   RuntimeReconciliationAction,
@@ -34,6 +36,19 @@ export function createDeployment(
 
 export function listDeploymentEvents(deploymentId: string): Promise<{ items: DeploymentEvent[] }> {
   return requestJson(`/deployments/${deploymentId}/events`);
+}
+
+export function listDeploymentDiagnostics(
+  deploymentId: string,
+): Promise<{ items: DeploymentDiagnosticMetadata[] }> {
+  return requestJson(`/deployments/${deploymentId}/diagnostics`);
+}
+
+export function getDeploymentDiagnostic(
+  deploymentId: string,
+  artifactId: string,
+): Promise<DeploymentDiagnostic> {
+  return requestJson(`/deployments/${deploymentId}/diagnostics/${artifactId}`);
 }
 
 export interface DeploymentEventStreamHandlers {

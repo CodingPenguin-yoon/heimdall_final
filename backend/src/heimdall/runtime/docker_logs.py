@@ -21,7 +21,6 @@ from heimdall.runtime.logs import (
 )
 from heimdall.runtime.models import (
     RuntimeConfigurationError,
-    RuntimeDatabase,
     RuntimeDeployment,
     RuntimeService,
 )
@@ -76,7 +75,7 @@ class _DockerServiceLogAccess:
         if selected is None:
             raise ServiceLogError("SERVICE_LOG_SERVICE_NOT_FOUND")
 
-        redactions = self._redactions(runtime.database, selected)
+        redactions = deployment_log_redactions(deployment, self._secret_store)
         container = container_name(deployment, selected)
         inspection = self._run(
             [
@@ -96,36 +95,6 @@ class _DockerServiceLogAccess:
 
         return _ServiceLogTarget(services, selected, redactions, container_id)
 
-    def _redactions(
-        self,
-        database: RuntimeDatabase | None,
-        service: RuntimeService,
-    ) -> tuple[str, ...]:
-        values: list[str] = []
-        try:
-            for secret in service.secrets:
-                values.append(self._secret_store.read(secret.reference, secret.fingerprint))
-            if service.project_database_access:
-                if database is None:
-                    raise SecretStoreError("database metadata is missing")
-                values.append(
-                    self._secret_store.read(
-                        database.credential_reference,
-                        database.credential_fingerprint,
-                    )
-                )
-        except (KeyError, OSError, UnicodeError, SecretStoreError) as error:
-            raise ServiceLogError("SERVICE_LOG_REDACTION_UNAVAILABLE") from error
-        if any(
-            not value
-            or "\n" in value
-            or "\r" in value
-            or len(value.encode("utf-8")) > SERVICE_LOG_MAX_LINE_BYTES
-            for value in values
-        ):
-            raise ServiceLogError("SERVICE_LOG_REDACTION_UNAVAILABLE")
-        return tuple(sorted(set(values), key=len, reverse=True))
-
     def _run(self, arguments: list[str]) -> CommandResult:
         try:
             return self._runner.run(
@@ -137,9 +106,82 @@ class _DockerServiceLogAccess:
             raise ServiceLogError("SERVICE_LOGS_UNAVAILABLE") from error
 
 
+def deployment_log_redactions(
+    deployment: Deployment,
+    secret_store: SecretStore,
+) -> tuple[str, ...]:
+    try:
+        runtime = RuntimeDeployment.from_deployment(deployment)
+    except RuntimeConfigurationError as error:
+        raise ServiceLogError("SERVICE_LOG_REDACTION_UNAVAILABLE") from error
+    values: list[str] = []
+    try:
+        for service in runtime.services:
+            for secret in service.secrets:
+                values.append(secret_store.read(secret.reference, secret.fingerprint))
+        if runtime.database is not None and any(
+            service.project_database_access for service in runtime.services
+        ):
+            values.append(
+                secret_store.read(
+                    runtime.database.credential_reference,
+                    runtime.database.credential_fingerprint,
+                )
+            )
+    except (KeyError, OSError, UnicodeError, SecretStoreError) as error:
+        raise ServiceLogError("SERVICE_LOG_REDACTION_UNAVAILABLE") from error
+    if any(
+        not value
+        or "\n" in value
+        or "\r" in value
+        or len(value.encode("utf-8")) > SERVICE_LOG_MAX_LINE_BYTES
+        for value in values
+    ):
+        raise ServiceLogError("SERVICE_LOG_REDACTION_UNAVAILABLE")
+    return tuple(sorted(set(values), key=len, reverse=True))
+
+
 class DockerServiceLogReader(_DockerServiceLogAccess):
     def read(self, deployment: Deployment, service_name: str | None) -> ServiceLogSnapshot:
         target = self._resolve(deployment, service_name)
+
+        return self._read_target(deployment, target)
+
+    def read_diagnostic(
+        self,
+        deployment: Deployment,
+        service_name: str,
+    ) -> tuple[ServiceLogSnapshot, str | None, int | None]:
+        target = self._resolve(deployment, service_name)
+        snapshot = self._read_target(deployment, target)
+        try:
+            state = self._run(
+                [
+                    "inspect",
+                    "--format",
+                    "{{json .State.Status}} {{json .State.ExitCode}}",
+                    target.container_id,
+                ]
+            )
+        except ServiceLogError:
+            return snapshot, None, None
+        if state.returncode != 0:
+            return snapshot, None, None
+        raw_status, separator, raw_exit_code = state.stdout.strip().partition(" ")
+        try:
+            status = json.loads(raw_status)
+            exit_code = json.loads(raw_exit_code) if separator else None
+        except (json.JSONDecodeError, TypeError):
+            return snapshot, None, None
+        if not isinstance(status, str) or not isinstance(exit_code, int):
+            return snapshot, None, None
+        return snapshot, status[:32], exit_code
+
+    def _read_target(
+        self,
+        deployment: Deployment,
+        target: _ServiceLogTarget,
+    ) -> ServiceLogSnapshot:
 
         result = self._run(
             ["logs", "--tail", str(SERVICE_LOG_TAIL), "--timestamps", target.container_id]

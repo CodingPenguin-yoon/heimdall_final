@@ -207,7 +207,10 @@ QUEUED
 -> SUCCEEDED
 ```
 
-build, start, health 또는 activation이 실패하면 candidate resource만 정리하고 기존 active generation과 Managed PostgreSQL data는 유지한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한 resource만 대상으로 한다.
+build, start, health 또는 activation이 실패하면 기존 Preview 연결을 먼저 복구하고, 실패 command 출력과
+존재하는 service의 최근 로그를 저장한 뒤 실패한 새 resource만 정리한다. 진단 저장 자체가 실패해도
+cleanup과 `FAILED` 수렴은 계속한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한
+resource만 대상으로 한다.
 
 `GET /api/deployments/{deploymentId}/events`는 저장된 구조화 event snapshot을 반환한다.
 active deployment의 UI는 마지막 event ID를
@@ -224,6 +227,13 @@ project secret과 database password는 Worker에서 `[REDACTED]`로 바뀐 뒤�
 redaction 값을 준비하지 못하면 원문을 반환하지 않으며, 응답은 메모리에서만 처리하고 저장하지 않는다.
 line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
 `503 SERVICE_LOG_REDACTION_UNAVAILABLE`로 fail closed 한다.
+
+`GET /api/deployments/{deploymentId}/diagnostics`는 실패 event와 연결된 command/service artifact
+metadata를 반환하고, `GET /api/deployments/{deploymentId}/diagnostics/{artifactId}`는 선택한 bounded
+line payload만 반환한다. artifact당 최대 256KiB, service당 최근 200줄이며 기본 30일
+(`HEIMDALL_DIAGNOSTIC_RETENTION_DAYS`) 보존한다. 알려진 secret을 안전하게 가릴 수 없거나 container
+로그를 읽지 못하면 원문 대신 수집 실패 이유만 저장한다. 배포 상세 화면은 실패한 배포의 `서비스
+로그` 영역을 보존 모드로 전환하며, 이곳에서 event별 command/service artifact를 선택할 수 있다.
 
 `GET /api/deployments/{deploymentId}/service-logs/stream?service={serviceName}`은 같은 검증·redaction
 경계를 사용해 최근 200줄부터 `docker logs --follow`의 새 출력을 SSE로 전달한다. 브라우저가

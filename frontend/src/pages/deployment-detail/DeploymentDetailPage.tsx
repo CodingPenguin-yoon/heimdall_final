@@ -2,7 +2,12 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
-import { deploymentQuery, deploymentServiceLogsQuery } from '@/entities/deployment/queries';
+import {
+  deploymentDiagnosticQuery,
+  deploymentDiagnosticsQuery,
+  deploymentQuery,
+  deploymentServiceLogsQuery,
+} from '@/entities/deployment/queries';
 import { subscribeServiceLogs } from '@/entities/deployment/api';
 import {
   deploymentStatusLabels as statusLabels,
@@ -11,6 +16,7 @@ import {
 } from '@/entities/deployment/presentation';
 import type {
   Deployment,
+  DeploymentDiagnosticMetadata,
   DeploymentEvent,
   DeploymentStatus,
   ServiceLogStreamLine,
@@ -180,6 +186,18 @@ function DeploymentEventLog({
   );
 }
 
+const diagnosticCaptureMessages: Record<string, string> = {
+  SERVICE_LOGS_UNAVAILABLE:
+    '컨테이너가 생성되지 않았거나 이미 사용할 수 없어 로그를 가져오지 못했습니다.',
+  SERVICE_LOG_REDACTION_UNAVAILABLE:
+    '민감정보를 안전하게 가릴 수 없어 로그 원문을 저장하지 않았습니다.',
+};
+
+function diagnosticLabel(item: DeploymentDiagnosticMetadata): string {
+  if (item.kind === 'SERVICE_LOG') return item.serviceName ?? '서비스 로그';
+  return item.operation?.replaceAll('_', ' ') ?? 'Docker 명령 출력';
+}
+
 const serviceLogErrors: Record<string, string> = {
   SERVICE_LOGS_UNAVAILABLE:
     '이 generation의 컨테이너가 아직 생성되지 않았거나 이미 정리되어 로그를 볼 수 없습니다.',
@@ -214,7 +232,21 @@ interface LiveServiceLogs {
   errorCode: string | null;
 }
 
-function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
+function ServiceLogPanel({ deployment }: { deployment: Deployment }) {
+  const deploymentId = deployment.id;
+  const retainedMode = deployment.status === 'FAILED';
+  const artifacts = useQuery({
+    ...deploymentDiagnosticsQuery(deploymentId, false),
+    enabled: retainedMode,
+  });
+  const [selectedArtifactId, setSelectedArtifactId] = useState('');
+  const selectedMetadata =
+    artifacts.data?.items.find((item) => item.id === selectedArtifactId) ??
+    artifacts.data?.items[0];
+  const effectiveSelectedArtifactId = selectedMetadata?.id ?? '';
+  const selectedArtifact = useQuery(
+    deploymentDiagnosticQuery(deploymentId, effectiveSelectedArtifactId),
+  );
   const [serviceName, setServiceName] = useState<string>();
   const [live, setLive] = useState<LiveServiceLogs>({
     status: 'CONNECTING',
@@ -235,6 +267,7 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
   });
 
   useEffect(() => {
+    if (retainedMode) return () => undefined;
     return subscribeServiceLogs(deploymentId, serviceName, {
       onOpen: () =>
         setLive((current) =>
@@ -275,7 +308,7 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
             : { ...current, status: 'RECONNECTING' },
         ),
     });
-  }, [deploymentId, serviceName]);
+  }, [deploymentId, retainedMode, serviceName]);
 
   useEffect(() => {
     if (!autoScrollRef.current) return;
@@ -337,89 +370,148 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         <div>
           <span className="eyebrow">Application output</span>
           <h2>서비스 로그</h2>
-          <p>선택한 컨테이너의 최근 200줄과 새 stdout·stderr 출력을 실시간으로 보여줍니다.</p>
+          <p>
+            {retainedMode
+              ? '실패한 새 컨테이너를 정리하기 전에 저장한 제한된 Docker·서비스 로그입니다.'
+              : '선택한 컨테이너의 최근 200줄과 새 stdout·stderr 출력을 실시간으로 보여줍니다.'}
+          </p>
         </div>
         <div className="service-log-controls">
-          <label>
-            <span>Service</span>
-            <select
-              aria-label="로그 서비스 선택"
-              value={selectedService}
-              disabled={services.length === 0}
-              onChange={(event) => {
-                const nextService = event.target.value;
-                setAutoScrollMode(true);
-                setLive((current) => ({
-                  ...current,
-                  status: 'CONNECTING',
-                  serviceName: nextService,
-                  lines: [],
-                  truncated: false,
-                  errorCode: null,
-                }));
-                setServiceName(nextService);
-              }}
-            >
-              {services.length === 0 ? <option value="">서비스 확인 중</option> : null}
-              {services.map((service) => (
-                <option key={service} value={service}>
-                  {service}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="button secondary service-log-refresh"
-            disabled={snapshot.isFetching}
-            onClick={() => void refreshSnapshot()}
-          >
-            <Icon name="refresh" /> {snapshot.isFetching ? '조회 중' : '새로고침'}
-          </button>
+          {retainedMode ? (
+            <label>
+              <span>Log</span>
+              <select
+                aria-label="로그 항목 선택"
+                value={effectiveSelectedArtifactId}
+                disabled={!artifacts.data?.items.length}
+                onChange={(event) => setSelectedArtifactId(event.target.value)}
+              >
+                {!artifacts.data?.items.length ? <option value="">저장 로그 확인 중</option> : null}
+                {artifacts.data?.items.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {diagnosticLabel(item)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <>
+              <label>
+                <span>Service</span>
+                <select
+                  aria-label="로그 서비스 선택"
+                  value={selectedService}
+                  disabled={services.length === 0}
+                  onChange={(event) => {
+                    const nextService = event.target.value;
+                    setAutoScrollMode(true);
+                    setLive((current) => ({
+                      ...current,
+                      status: 'CONNECTING',
+                      serviceName: nextService,
+                      lines: [],
+                      truncated: false,
+                      errorCode: null,
+                    }));
+                    setServiceName(nextService);
+                  }}
+                >
+                  {services.length === 0 ? <option value="">서비스 확인 중</option> : null}
+                  {services.map((service) => (
+                    <option key={service} value={service}>
+                      {service}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="button secondary service-log-refresh"
+                disabled={snapshot.isFetching}
+                onClick={() => void refreshSnapshot()}
+              >
+                <Icon name="refresh" /> {snapshot.isFetching ? '조회 중' : '새로고침'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       <div className="service-log-notice" role="note">
         <Icon name="shield" />
-        <p>
-          Heimdall이 아는 secret은 마스킹하지만 애플리케이션 로그에는 알 수 없는 개인정보나 인증
-          정보가 포함될 수 있습니다. 이 실시간 로그와 snapshot은 저장하지 않습니다.
-        </p>
+        {retainedMode ? (
+          <p>
+            실패 시 수집한 로그 또는 수집하지 못한 이유를 30일간 보관합니다. Heimdall이 아는
+            secret은 저장 전에 마스킹합니다.
+          </p>
+        ) : (
+          <p>
+            Heimdall이 아는 secret은 마스킹하지만 애플리케이션 로그에는 알 수 없는 개인정보나 인증
+            정보가 포함될 수 있습니다. 이 실시간 로그와 snapshot은 저장하지 않습니다.
+          </p>
+        )}
       </div>
 
       <div className="service-log-meta">
-        <span>
-          <span className={`service-log-connection ${live.status.toLowerCase()}`}>
-            {serviceLogConnectionLabels[live.status]}
-          </span>
-          {live.serviceName ? (
-            <>
-              {' '}
-              <strong>{live.serviceName}</strong> · {live.lines.length} lines
-              {live.truncated ? ' · 일부 생략됨' : ''}
-            </>
-          ) : null}
-        </span>
-        {live.connectedAt ? (
-          <time dateTime={live.connectedAt}>기준 {formatDate(live.connectedAt)}</time>
-        ) : null}
-        <div className="service-log-follow-controls">
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => (autoScroll ? setAutoScrollMode(false) : moveToLatest())}
-          >
-            {autoScroll ? '자동 스크롤 일시정지' : '자동 스크롤 계속'}
-          </button>
-          {!autoScroll && pendingLines > 0 ? (
-            <button type="button" className="button primary" onClick={moveToLatest}>
-              최신 로그 {pendingLines}개
-            </button>
-          ) : null}
-        </div>
+        {retainedMode ? (
+          <>
+            <span>
+              <span className="service-log-connection retained">저장된 로그</span>
+              {selectedMetadata ? (
+                <>
+                  {' '}
+                  <strong>{diagnosticLabel(selectedMetadata)}</strong>{' '}
+                  <span className="service-log-artifact-summary">
+                    Event #{selectedMetadata.eventId} ·{' '}
+                    {selectedMetadata.captureStatus === 'CAPTURED'
+                      ? `${selectedMetadata.lineCount}줄`
+                      : '수집 불가'}
+                  </span>
+                </>
+              ) : null}
+            </span>
+            {selectedMetadata ? (
+              <time dateTime={selectedMetadata.expiresAt}>
+                보관 만료 {formatDate(selectedMetadata.expiresAt)}
+              </time>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <span>
+              <span className={`service-log-connection ${live.status.toLowerCase()}`}>
+                {serviceLogConnectionLabels[live.status]}
+              </span>
+              {live.serviceName ? (
+                <>
+                  {' '}
+                  <strong>{live.serviceName}</strong> · {live.lines.length} lines
+                  {live.truncated ? ' · 일부 생략됨' : ''}
+                </>
+              ) : null}
+            </span>
+            {live.connectedAt ? (
+              <time dateTime={live.connectedAt}>기준 {formatDate(live.connectedAt)}</time>
+            ) : null}
+            <div className="service-log-follow-controls">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => (autoScroll ? setAutoScrollMode(false) : moveToLatest())}
+              >
+                {autoScroll ? '자동 스크롤 일시정지' : '자동 스크롤 계속'}
+              </button>
+              {!autoScroll && pendingLines > 0 ? (
+                <button type="button" className="button primary" onClick={moveToLatest}>
+                  최신 로그 {pendingLines}개
+                </button>
+              ) : null}
+            </div>
+          </>
+        )}
       </div>
 
-      {errorCode && errorMessage ? (
+      {!retainedMode && errorCode && errorMessage ? (
         <div className="service-log-inline-error" role="alert">
           <strong>{errorMessage}</strong>
           <small>{errorCode}</small>
@@ -430,29 +522,81 @@ function ServiceLogPanel({ deploymentId }: { deploymentId: string }) {
         ref={outputRef}
         className="service-log-output"
         role="log"
-        aria-label="서비스 컨테이너 로그"
+        aria-label={retainedMode ? '저장된 실패 로그' : '서비스 컨테이너 로그'}
         aria-live="off"
-        aria-busy={live.status === 'CONNECTING' || snapshot.isFetching}
-        onScroll={handleLogScroll}
+        aria-busy={
+          retainedMode
+            ? artifacts.isLoading || selectedArtifact.isLoading
+            : live.status === 'CONNECTING' || snapshot.isFetching
+        }
+        onScroll={retainedMode ? undefined : handleLogScroll}
       >
-        {live.status === 'CONNECTING' && live.lines.length === 0 ? (
+        {retainedMode && artifacts.isLoading ? (
+          <p className="service-log-empty">저장된 로그를 확인 중입니다.</p>
+        ) : null}
+        {retainedMode && artifacts.isError ? (
+          <p className="service-log-empty service-log-error">
+            저장된 로그 목록을 불러오지 못했습니다.
+          </p>
+        ) : null}
+        {retainedMode && artifacts.data?.items.length === 0 ? (
+          <p className="service-log-empty">
+            저장된 실패 로그가 없거나 보존 기간이 끝났습니다. 로그를 가져오지 못했다면 그 이유가
+            이곳에 표시됩니다.
+          </p>
+        ) : null}
+        {retainedMode && selectedArtifact.isLoading ? (
+          <p className="service-log-empty">로그 내용을 불러오는 중입니다.</p>
+        ) : null}
+        {retainedMode && selectedArtifact.isError ? (
+          <p className="service-log-empty service-log-error">
+            저장된 로그가 만료됐거나 내용을 불러오지 못했습니다.
+          </p>
+        ) : null}
+        {retainedMode && selectedMetadata?.captureStatus === 'UNAVAILABLE' ? (
+          <p className="service-log-empty">
+            {diagnosticCaptureMessages[selectedMetadata.captureCode ?? ''] ??
+              `로그를 가져오지 못했습니다 (${selectedMetadata.captureCode ?? 'UNKNOWN'}).`}
+          </p>
+        ) : null}
+        {retainedMode && selectedArtifact.data?.lines.length ? (
+          <ol>
+            {selectedArtifact.data.lines.map((line, index) => (
+              <li key={`${line.timestamp ?? 'command'}-${line.stream}-${index}`}>
+                <time dateTime={line.timestamp ?? undefined}>
+                  {line.timestamp ? formatEventTime(line.timestamp) : '명령'}
+                </time>
+                <span className={`service-log-stream ${line.stream.toLowerCase()}`}>
+                  {line.stream}
+                </span>
+                <pre>{line.message}</pre>
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        {retainedMode && selectedArtifact.data?.truncated ? (
+          <small className="service-log-retained-truncated">
+            용량 제한에 맞춰 앞부분이 생략되었습니다.
+          </small>
+        ) : null}
+        {!retainedMode && live.status === 'CONNECTING' && live.lines.length === 0 ? (
           <p className="service-log-empty">실시간 서비스 로그에 연결하는 중입니다.</p>
         ) : null}
-        {live.status === 'RECONNECTING' && live.lines.length === 0 ? (
+        {!retainedMode && live.status === 'RECONNECTING' && live.lines.length === 0 ? (
           <p className="service-log-empty">연결이 끊겨 자동으로 다시 연결하는 중입니다.</p>
         ) : null}
-        {live.status === 'ENDED' && live.lines.length === 0 ? (
+        {!retainedMode && live.status === 'ENDED' && live.lines.length === 0 ? (
           <p className="service-log-empty">컨테이너 로그 스트림이 종료되었습니다.</p>
         ) : null}
-        {live.status === 'ERROR' && live.lines.length === 0 ? (
+        {!retainedMode && live.status === 'ERROR' && live.lines.length === 0 ? (
           <p className="service-log-empty">
             새로고침으로 마지막 snapshot을 다시 조회할 수 있습니다.
           </p>
         ) : null}
-        {live.status === 'LIVE' && live.lines.length === 0 ? (
+        {!retainedMode && live.status === 'LIVE' && live.lines.length === 0 ? (
           <p className="service-log-empty">연결되었습니다. 아직 출력된 서비스 로그가 없습니다.</p>
         ) : null}
-        {live.lines.length > 0 ? (
+        {!retainedMode && live.lines.length > 0 ? (
           <ol>
             {live.lines.map((line, index) => (
               <li key={`${line.timestamp}-${line.stream}-${index}`}>
@@ -626,7 +770,7 @@ export function DeploymentDetailPage() {
         error={events.error}
       />
 
-      <ServiceLogPanel deploymentId={item.id} />
+      <ServiceLogPanel deployment={item} />
 
       <DeploymentResult deployment={item} />
 

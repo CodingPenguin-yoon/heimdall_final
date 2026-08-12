@@ -32,6 +32,38 @@ export interface DeploymentEvent {
   createdAt: string;
 }
 
+export type DeploymentDiagnosticKind = 'COMMAND_OUTPUT' | 'SERVICE_LOG';
+export type DeploymentDiagnosticCaptureStatus = 'CAPTURED' | 'UNAVAILABLE';
+
+export interface DeploymentDiagnosticMetadata {
+  id: string;
+  deploymentId: string;
+  eventId: number;
+  kind: DeploymentDiagnosticKind;
+  failureStage: string;
+  failureCode: string;
+  captureStatus: DeploymentDiagnosticCaptureStatus;
+  captureCode: string | null;
+  operation: string | null;
+  serviceName: string | null;
+  returnCode: number | null;
+  containerStatus: string | null;
+  containerExitCode: number | null;
+  lineCount: number;
+  byteCount: number;
+  truncated: boolean;
+  capturedAt: string;
+  expiresAt: string;
+}
+
+export interface DeploymentDiagnostic extends DeploymentDiagnosticMetadata {
+  lines: Array<{
+    timestamp: string | null;
+    stream: 'STDOUT' | 'STDERR';
+    message: string;
+  }>;
+}
+
 export interface ServiceLogLine {
   timestamp: string;
   stream: 'STDOUT' | 'STDERR';

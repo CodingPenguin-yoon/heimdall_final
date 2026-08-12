@@ -5,10 +5,12 @@ import shutil
 from pathlib import Path
 from typing import Protocol
 
+from heimdall.deployments.diagnostics import DiagnosticArtifactDraft
 from heimdall.deployments.models import Deployment, DeploymentStatus
 from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure, RuntimeProgress
 from heimdall.git.client import GitAccessError, GitClient
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.deployment_diagnostics import DockerDeploymentDiagnosticCollector
 from heimdall.runtime.docker import CandidateGeneration, DockerRuntime
 from heimdall.runtime.models import RuntimeConfigurationError, RuntimeDeployment
 from heimdall.secrets.store import SecretStore
@@ -44,6 +46,7 @@ class DockerDeploymentProcessor:
         activator: RuntimeActivator,
         secret_store: SecretStore,
         workspace_root: Path,
+        diagnostics: DockerDeploymentDiagnosticCollector | None = None,
     ) -> None:
         self._projects = projects
         self._git = git
@@ -51,6 +54,7 @@ class DockerDeploymentProcessor:
         self._activator = activator
         self._secret_store = secret_store
         self._workspace_root = workspace_root.resolve()
+        self._diagnostics = diagnostics
 
     def recover(self, deployment: Deployment, progress: RuntimeProgress) -> RecoveryDisposition:
         try:
@@ -108,6 +112,23 @@ class DockerDeploymentProcessor:
         self._docker.cleanup_candidate(deployment, runtime)
         self._remove_workspace(self._workspace(deployment))
 
+    def rollback_candidate(self, deployment: Deployment) -> None:
+        try:
+            RuntimeDeployment.from_deployment(deployment)
+        except RuntimeConfigurationError:
+            return
+        self._activator.rollback_candidate(deployment)
+
+    def capture_diagnostics(
+        self,
+        deployment: Deployment,
+        failure: RuntimeFailure,
+        progress,
+    ) -> tuple[DiagnosticArtifactDraft, ...]:
+        if self._diagnostics is None:
+            return ()
+        return self._diagnostics.capture(deployment, failure, progress.heartbeat)
+
     def cleanup_candidate_verified(self, deployment: Deployment, progress: RuntimeProgress) -> None:
         try:
             runtime = RuntimeDeployment.from_deployment(deployment)
@@ -127,6 +148,28 @@ class DockerDeploymentProcessor:
         progress.heartbeat()
         self._docker.cleanup_candidate_verified(deployment, runtime, progress)
         self._remove_workspace(self._workspace(deployment))
+
+    def prepare_reconciliation_cleanup(
+        self,
+        deployment: Deployment,
+        progress: RuntimeProgress,
+    ) -> None:
+        try:
+            RuntimeDeployment.from_deployment(deployment)
+        except RuntimeConfigurationError as error:
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "SNAPSHOT_INVALID",
+                cleanup_candidate=False,
+            ) from error
+        if self._activator.is_active(deployment):
+            raise RuntimeFailure(
+                "RECONCILIATION",
+                "ACTIVE_GENERATION_CANNOT_BE_CLEANED",
+                cleanup_candidate=False,
+            )
+        self._activator.rollback_candidate(deployment)
+        progress.heartbeat()
 
     def _workspace(self, deployment: Deployment) -> Path:
         return self._workspace_root / deployment.id.hex

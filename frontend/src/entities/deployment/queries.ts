@@ -2,9 +2,11 @@ import { queryOptions } from '@tanstack/react-query';
 
 import {
   getDeployment,
+  getDeploymentDiagnostic,
   getRuntimeReconciliation,
   getServiceLogs,
   listDeploymentEvents,
+  listDeploymentDiagnostics,
   listDeployments,
   listRecentDeployments,
 } from './api';
@@ -15,6 +17,9 @@ export const deploymentKeys = {
   project: (projectId: string) => ['projects', projectId, 'deployments'] as const,
   detail: (deploymentId: string) => ['deployments', deploymentId] as const,
   events: (deploymentId: string) => ['deployments', deploymentId, 'events'] as const,
+  diagnostics: (deploymentId: string) => ['deployments', deploymentId, 'diagnostics'] as const,
+  diagnostic: (deploymentId: string, artifactId: string) =>
+    ['deployments', deploymentId, 'diagnostics', artifactId] as const,
   serviceLogs: (deploymentId: string, serviceName?: string) =>
     ['deployments', deploymentId, 'service-logs', serviceName ?? 'root'] as const,
   reconciliation: (deploymentId: string) =>
@@ -51,6 +56,23 @@ export const deploymentEventsQuery = (deploymentId: string | undefined) =>
     queryKey: deploymentKeys.events(deploymentId ?? 'none'),
     queryFn: () => listDeploymentEvents(deploymentId ?? ''),
     enabled: Boolean(deploymentId),
+  });
+
+export const deploymentDiagnosticsQuery = (deploymentId: string, active: boolean) =>
+  queryOptions({
+    queryKey: deploymentKeys.diagnostics(deploymentId),
+    queryFn: () => listDeploymentDiagnostics(deploymentId),
+    enabled: Boolean(deploymentId),
+    refetchInterval: active ? 1_000 : false,
+  });
+
+export const deploymentDiagnosticQuery = (deploymentId: string, artifactId: string) =>
+  queryOptions({
+    queryKey: deploymentKeys.diagnostic(deploymentId, artifactId),
+    queryFn: () => getDeploymentDiagnostic(deploymentId, artifactId),
+    enabled: Boolean(deploymentId && artifactId),
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
 export const deploymentServiceLogsQuery = (deploymentId: string, serviceName?: string) =>

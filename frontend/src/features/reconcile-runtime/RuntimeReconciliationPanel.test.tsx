@@ -97,4 +97,20 @@ describe('RuntimeReconciliationPanel', () => {
       deployment.id,
     );
   });
+
+  it('hides reconciliation and force cleanup actions after resolution', async () => {
+    vi.mocked(getRuntimeReconciliation).mockResolvedValue({
+      ...retained,
+      state: 'RESOLVED',
+      result: 'CLEANED',
+      resultCode: 'INACTIVE_CANDIDATE_CLEANED',
+      completedAt: '2026-08-08T06:06:00Z',
+    });
+
+    renderPanel();
+
+    expect(await screen.findByText('처리 완료')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '지금 안전 확인' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '보존 자원 강제 정리' })).not.toBeInTheDocument();
+  });
 });

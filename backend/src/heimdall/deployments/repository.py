@@ -9,6 +9,16 @@ from uuid import UUID, uuid4
 from psycopg.errors import UniqueViolation
 
 from heimdall.database import Database
+from heimdall.deployments.diagnostics import (
+    DIAGNOSTIC_ARTIFACT_MAX_BYTES,
+    DeploymentDiagnosticArtifact,
+    DeploymentDiagnosticNotFoundError,
+    DiagnosticArtifactDraft,
+    DiagnosticArtifactKind,
+    DiagnosticCaptureStatus,
+    DiagnosticLine,
+    DiagnosticStream,
+)
 from heimdall.deployments.models import (
     ActiveDeploymentError,
     Deployment,
@@ -72,6 +82,34 @@ class DeploymentRepository(Protocol):
     def list_events_after(
         self, deployment_id: UUID, after_id: int, limit: int = 100
     ) -> Sequence[DeploymentEvent]: ...
+
+    def record_diagnostics(
+        self,
+        claim: DeploymentJobClaim,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> DeploymentEvent: ...
+
+    def record_reconciliation_diagnostics(
+        self,
+        deployment_id: UUID,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> DeploymentEvent: ...
+
+    def list_diagnostics(self, deployment_id: UUID) -> Sequence[DeploymentDiagnosticArtifact]: ...
+
+    def get_diagnostic(
+        self, deployment_id: UUID, artifact_id: UUID
+    ) -> DeploymentDiagnosticArtifact: ...
+
+    def purge_expired_diagnostics(self, limit: int = 100) -> int: ...
 
     def reconcile_succeeded(self, deployment_id: UUID) -> Deployment: ...
 
@@ -423,6 +461,210 @@ class PostgresDeploymentRepository:
             ).fetchall()
         return [_event(row) for row in rows]
 
+    def record_diagnostics(
+        self,
+        claim: DeploymentJobClaim,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> DeploymentEvent:
+        if retention <= timedelta(0):
+            raise ValueError("diagnostic retention must be positive")
+        now = datetime.now(UTC)
+        event_code, message = _diagnostic_event_summary(artifacts)
+        with self._database.connection() as connection:
+            self._lock_claim(connection, claim, now)
+            event_id = self._insert_event(
+                connection,
+                claim.deployment.id,
+                failure_stage,
+                event_code,
+                message,
+                now,
+            )
+            self._insert_diagnostic_artifacts(
+                connection,
+                deployment_id=claim.deployment.id,
+                event_id=event_id,
+                failure_stage=failure_stage,
+                failure_code=failure_code,
+                artifacts=artifacts,
+                retention=retention,
+            )
+        return DeploymentEvent(
+            id=event_id,
+            deployment_id=claim.deployment.id,
+            stage=failure_stage,
+            code=event_code,
+            message=message,
+            created_at=now,
+        )
+
+    def record_reconciliation_diagnostics(
+        self,
+        deployment_id: UUID,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> DeploymentEvent:
+        if retention <= timedelta(0):
+            raise ValueError("diagnostic retention must be positive")
+        now = datetime.now(UTC)
+        event_code, message = _diagnostic_event_summary(artifacts)
+        with self._database.connection() as connection:
+            current = connection.execute(
+                """
+                SELECT status, failure_stage, failure_code
+                FROM deployments
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (deployment_id,),
+            ).fetchone()
+            if current is None:
+                raise DeploymentNotFoundError
+            if not (
+                current["status"] == DeploymentStatus.FAILED.value
+                and current["failure_stage"] == "RECOVERY"
+                and current["failure_code"] == "RECOVERY_STATE_UNCERTAIN"
+            ):
+                raise DeploymentReconciliationConflictError
+            event_id = self._insert_event(
+                connection,
+                deployment_id,
+                failure_stage,
+                event_code,
+                message,
+                now,
+            )
+            self._insert_diagnostic_artifacts(
+                connection,
+                deployment_id=deployment_id,
+                event_id=event_id,
+                failure_stage=failure_stage,
+                failure_code=failure_code,
+                artifacts=artifacts,
+                retention=retention,
+            )
+        return DeploymentEvent(
+            id=event_id,
+            deployment_id=deployment_id,
+            stage=failure_stage,
+            code=event_code,
+            message=message,
+            created_at=now,
+        )
+
+    def list_diagnostics(self, deployment_id: UUID) -> Sequence[DeploymentDiagnosticArtifact]:
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM deployment_diagnostic_artifacts
+                WHERE deployment_id = %s AND expires_at > %s
+                ORDER BY event_id, captured_at, id
+                """,
+                (deployment_id, datetime.now(UTC)),
+            ).fetchall()
+        return [_diagnostic(row, include_lines=False) for row in rows]
+
+    def get_diagnostic(
+        self, deployment_id: UUID, artifact_id: UUID
+    ) -> DeploymentDiagnosticArtifact:
+        with self._database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM deployment_diagnostic_artifacts
+                WHERE deployment_id = %s AND id = %s AND expires_at > %s
+                """,
+                (deployment_id, artifact_id, datetime.now(UTC)),
+            ).fetchone()
+        if row is None:
+            raise DeploymentDiagnosticNotFoundError
+        return _diagnostic(row, include_lines=True)
+
+    def purge_expired_diagnostics(self, limit: int = 100) -> int:
+        if limit < 1 or limit > 1000:
+            raise ValueError("diagnostic purge limit must be between 1 and 1000")
+        with self._database.connection() as connection:
+            rows = connection.execute(
+                """
+                DELETE FROM deployment_diagnostic_artifacts
+                WHERE id IN (
+                    SELECT id FROM deployment_diagnostic_artifacts
+                    WHERE expires_at <= %s
+                    ORDER BY expires_at, id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT %s
+                )
+                RETURNING id
+                """,
+                (datetime.now(UTC), limit),
+            ).fetchall()
+        return len(rows)
+
+    @staticmethod
+    def _insert_diagnostic_artifacts(
+        connection,
+        *,
+        deployment_id: UUID,
+        event_id: int,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> None:
+        for artifact in artifacts:
+            payload = [
+                {
+                    "timestamp": line.timestamp,
+                    "stream": line.stream.value,
+                    "message": line.message,
+                }
+                for line in artifact.lines
+            ]
+            encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(encoded) > DIAGNOSTIC_ARTIFACT_MAX_BYTES:
+                raise ValueError("diagnostic artifact exceeds the byte limit")
+            connection.execute(
+                """
+                INSERT INTO deployment_diagnostic_artifacts (
+                    id, deployment_id, event_id, kind, failure_stage, failure_code,
+                    capture_status, capture_code, operation, service_name, return_code,
+                    container_status, container_exit_code, line_count, byte_count,
+                    truncated, payload, captured_at, expires_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s::jsonb, %s, %s
+                )
+                ON CONFLICT DO NOTHING
+                """,
+                (
+                    uuid4(),
+                    deployment_id,
+                    event_id,
+                    artifact.kind.value,
+                    failure_stage,
+                    failure_code,
+                    artifact.capture_status.value,
+                    artifact.capture_code,
+                    artifact.operation,
+                    artifact.service_name,
+                    artifact.return_code,
+                    artifact.container_status,
+                    artifact.container_exit_code,
+                    len(artifact.lines),
+                    len(encoded),
+                    artifact.truncated,
+                    encoded.decode("utf-8"),
+                    artifact.captured_at,
+                    artifact.captured_at + retention,
+                ),
+            )
+
     def reconcile_succeeded(self, deployment_id: UUID) -> Deployment:
         now = datetime.now(UTC)
         with self._database.connection() as connection:
@@ -500,7 +742,7 @@ class PostgresDeploymentRepository:
         code: str,
         message: str,
         created_at: datetime,
-    ) -> None:
+    ) -> int:
         row = connection.execute(
             """
             INSERT INTO deployment_events (
@@ -520,6 +762,7 @@ class PostgresDeploymentRepository:
                 ),
             ),
         )
+        return row["id"]
 
 
 def _deployment(row: dict) -> Deployment:
@@ -549,3 +792,50 @@ def _event(row: dict) -> DeploymentEvent:
         message=row["message"],
         created_at=row["created_at"],
     )
+
+
+def _diagnostic(row: dict, *, include_lines: bool) -> DeploymentDiagnosticArtifact:
+    lines = None
+    if include_lines:
+        lines = tuple(
+            DiagnosticLine(
+                timestamp=item.get("timestamp"),
+                stream=DiagnosticStream(item["stream"]),
+                message=item["message"],
+            )
+            for item in row["payload"]
+        )
+    return DeploymentDiagnosticArtifact(
+        id=row["id"],
+        deployment_id=row["deployment_id"],
+        event_id=row["event_id"],
+        kind=DiagnosticArtifactKind(row["kind"]),
+        failure_stage=row["failure_stage"],
+        failure_code=row["failure_code"],
+        capture_status=DiagnosticCaptureStatus(row["capture_status"]),
+        capture_code=row["capture_code"],
+        operation=row["operation"],
+        service_name=row["service_name"],
+        return_code=row["return_code"],
+        container_status=row["container_status"],
+        container_exit_code=row["container_exit_code"],
+        line_count=row["line_count"],
+        byte_count=row["byte_count"],
+        truncated=row["truncated"],
+        captured_at=row["captured_at"],
+        expires_at=row["expires_at"],
+        lines=lines,
+    )
+
+
+def _diagnostic_event_summary(
+    artifacts: Sequence[DiagnosticArtifactDraft],
+) -> tuple[str, str]:
+    captured = sum(item.capture_status is DiagnosticCaptureStatus.CAPTURED for item in artifacts)
+    if captured == len(artifacts) and artifacts:
+        event_code = "DIAGNOSTIC_LOG_CAPTURED"
+    elif captured:
+        event_code = "DIAGNOSTIC_LOG_PARTIAL"
+    else:
+        event_code = "DIAGNOSTIC_LOG_UNAVAILABLE"
+    return event_code, f"Stored {captured} of {len(artifacts)} bounded diagnostic artifacts"

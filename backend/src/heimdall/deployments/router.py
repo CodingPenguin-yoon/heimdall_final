@@ -9,6 +9,9 @@ from heimdall.deployments.event_sse import deployment_event_sse_events
 from heimdall.deployments.log_stream import service_log_sse_events
 from heimdall.deployments.schemas import (
     DeploymentCreate,
+    DeploymentDiagnosticList,
+    DeploymentDiagnosticMetadataRead,
+    DeploymentDiagnosticRead,
     DeploymentEventList,
     DeploymentEventRead,
     DeploymentList,
@@ -64,6 +67,37 @@ def list_deployment_events(deployment_id: UUID, request: Request) -> DeploymentE
         items=[
             DeploymentEventRead.from_event(item) for item in service(request).events(deployment_id)
         ]
+    )
+
+
+@router.get("/deployments/{deployment_id}/diagnostics", response_model=DeploymentDiagnosticList)
+def list_deployment_diagnostics(
+    deployment_id: UUID,
+    request: Request,
+    response: Response,
+) -> DeploymentDiagnosticList:
+    response.headers["Cache-Control"] = "no-store"
+    return DeploymentDiagnosticList(
+        items=[
+            DeploymentDiagnosticMetadataRead.from_artifact(item)
+            for item in service(request).diagnostics(deployment_id)
+        ]
+    )
+
+
+@router.get(
+    "/deployments/{deployment_id}/diagnostics/{artifact_id}",
+    response_model=DeploymentDiagnosticRead,
+)
+def get_deployment_diagnostic(
+    deployment_id: UUID,
+    artifact_id: UUID,
+    request: Request,
+    response: Response,
+) -> DeploymentDiagnosticRead:
+    response.headers["Cache-Control"] = "no-store"
+    return DeploymentDiagnosticRead.from_artifact(
+        service(request).diagnostic(deployment_id, artifact_id)
     )
 
 

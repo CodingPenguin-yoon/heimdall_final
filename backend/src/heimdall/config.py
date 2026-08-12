@@ -33,6 +33,7 @@ class Settings:
     worker_poll_seconds: float
     worker_max_attempts: int
     runtime_retention_hours: float
+    diagnostic_retention_days: float = 30
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -90,4 +91,7 @@ class Settings:
             worker_poll_seconds=float(os.environ.get("HEIMDALL_WORKER_POLL_SECONDS", "1")),
             worker_max_attempts=int(os.environ.get("HEIMDALL_WORKER_MAX_ATTEMPTS", "3")),
             runtime_retention_hours=float(os.environ.get("HEIMDALL_RUNTIME_RETENTION_HOURS", "72")),
+            diagnostic_retention_days=float(
+                os.environ.get("HEIMDALL_DIAGNOSTIC_RETENTION_DAYS", "30")
+            ),
         )

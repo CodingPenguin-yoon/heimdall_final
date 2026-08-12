@@ -55,7 +55,9 @@ class FailedBuildRunner(RecordingRunner):
     def run(self, arguments, *, timeout_seconds, heartbeat=None, check=True) -> CommandResult:
         values = list(arguments)
         if len(values) > 1 and values[1] == "build":
-            raise CommandExecutionError(1)
+            raise CommandExecutionError(
+                CommandResult(17, "bounded build output", "bounded build error")
+            )
         return super().run(
             values,
             timeout_seconds=timeout_seconds,
@@ -224,6 +226,32 @@ def test_docker_candidate_uses_file_mounts_and_service_scoped_managed_values(
     assert candidate.services[0].health_port == 49152
     assert probe.urls == ["http://127.0.0.1:49152/health"]
     assert progress.stages == ["BUILDING", "STARTING", "HEALTH_CHECKING"]
+
+
+def test_failed_docker_command_preserves_bounded_output_without_raw_arguments(
+    tmp_path: Path,
+) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Dockerfile").write_text("FROM scratch\n")
+
+    with pytest.raises(RuntimeFailure) as raised:
+        DockerRuntime(FailedBuildRunner(), RecordingProbe()).start_candidate(
+            item,
+            runtime,
+            source,
+            FilePaths(tmp_path),
+            RecordingProgress(),
+        )
+
+    assert raised.value.code == "IMAGE_BUILD_FAILED"
+    assert raised.value.command_output is not None
+    assert raised.value.command_output.operation == "DOCKER_BUILD"
+    assert raised.value.command_output.return_code == 17
+    assert raised.value.command_output.stdout == "bounded build output"
+    assert raised.value.command_output.stderr == "bounded build error"
 
 
 def test_docker_candidate_uses_configured_host_for_health_probe(tmp_path: Path) -> None:

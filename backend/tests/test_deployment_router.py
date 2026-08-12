@@ -1,10 +1,18 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_runtime_models import runtime_deployment
 
 from heimdall.common.errors import install_error_handlers
+from heimdall.deployments.diagnostics import (
+    DeploymentDiagnosticArtifact,
+    DiagnosticArtifactKind,
+    DiagnosticCaptureStatus,
+    DiagnosticLine,
+    DiagnosticStream,
+)
 from heimdall.deployments.event_stream import (
     DeploymentEventStreamEnd,
     DeploymentEventStreamReady,
@@ -77,6 +85,27 @@ class EventSubscription:
 class DeploymentCatalog:
     def __init__(self) -> None:
         self.item = runtime_deployment()
+        self.diagnostic_item = DeploymentDiagnosticArtifact(
+            id=uuid4(),
+            deployment_id=self.item.id,
+            event_id=42,
+            kind=DiagnosticArtifactKind.COMMAND_OUTPUT,
+            failure_stage="BUILD",
+            failure_code="IMAGE_BUILD_FAILED",
+            capture_status=DiagnosticCaptureStatus.CAPTURED,
+            capture_code=None,
+            operation="DOCKER_BUILD",
+            service_name=None,
+            return_code=17,
+            container_status=None,
+            container_exit_code=None,
+            line_count=1,
+            byte_count=96,
+            truncated=False,
+            captured_at=datetime(2026, 8, 7, 1, tzinfo=UTC),
+            expires_at=datetime(2026, 9, 6, 1, tzinfo=UTC),
+            lines=(DiagnosticLine(DiagnosticStream.STDERR, "build failed"),),
+        )
 
     def list_recent(self):
         return [self.item]
@@ -105,6 +134,15 @@ class DeploymentCatalog:
     def open_event_stream(self, deployment_id, after_id):
         self.event_subscription = EventSubscription(deployment_id, after_id)
         return self.event_subscription
+
+    def diagnostics(self, deployment_id):
+        assert deployment_id == self.item.id
+        return [self.diagnostic_item]
+
+    def diagnostic(self, deployment_id, artifact_id):
+        assert deployment_id == self.item.id
+        assert artifact_id == self.diagnostic_item.id
+        return self.diagnostic_item
 
 
 def test_global_deployments_returns_existing_public_dto() -> None:
@@ -161,6 +199,29 @@ def test_service_logs_return_bounded_public_contract_without_caching() -> None:
         ],
         "truncated": False,
     }
+
+
+def test_diagnostic_list_omits_payload_and_detail_returns_bounded_lines() -> None:
+    app = FastAPI()
+    catalog = DeploymentCatalog()
+    app.state.deployments = catalog
+    app.include_router(router, prefix="/api")
+    client = TestClient(app)
+
+    listed = client.get(f"/api/deployments/{catalog.item.id}/diagnostics")
+    detail = client.get(
+        f"/api/deployments/{catalog.item.id}/diagnostics/{catalog.diagnostic_item.id}"
+    )
+
+    assert listed.status_code == 200
+    assert listed.headers["cache-control"] == "no-store"
+    assert "lines" not in listed.json()["items"][0]
+    assert listed.json()["items"][0]["eventId"] == 42
+    assert detail.status_code == 200
+    assert detail.headers["cache-control"] == "no-store"
+    assert detail.json()["lines"] == [
+        {"timestamp": None, "stream": "STDERR", "message": "build failed"}
+    ]
 
 
 def test_service_logs_reject_noncanonical_service_name_before_the_service_layer() -> None:

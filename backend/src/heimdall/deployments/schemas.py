@@ -7,6 +7,12 @@ from uuid import UUID
 from pydantic import model_validator
 
 from heimdall.common.api_model import ApiModel
+from heimdall.deployments.diagnostics import (
+    DeploymentDiagnosticArtifact,
+    DiagnosticArtifactKind,
+    DiagnosticCaptureStatus,
+    DiagnosticStream,
+)
 from heimdall.deployments.models import (
     Deployment,
     DeploymentEvent,
@@ -95,6 +101,81 @@ class DeploymentEventRead(ApiModel):
 
 class DeploymentEventList(ApiModel):
     items: list[DeploymentEventRead]
+
+
+class DeploymentDiagnosticMetadataRead(ApiModel):
+    id: UUID
+    deployment_id: UUID
+    event_id: int
+    kind: DiagnosticArtifactKind
+    failure_stage: str
+    failure_code: str
+    capture_status: DiagnosticCaptureStatus
+    capture_code: str | None
+    operation: str | None
+    service_name: str | None
+    return_code: int | None
+    container_status: str | None
+    container_exit_code: int | None
+    line_count: int
+    byte_count: int
+    truncated: bool
+    captured_at: datetime
+    expires_at: datetime
+
+    @classmethod
+    def from_artifact(
+        cls, artifact: DeploymentDiagnosticArtifact
+    ) -> DeploymentDiagnosticMetadataRead:
+        return cls(
+            id=artifact.id,
+            deployment_id=artifact.deployment_id,
+            event_id=artifact.event_id,
+            kind=artifact.kind,
+            failure_stage=artifact.failure_stage,
+            failure_code=artifact.failure_code,
+            capture_status=artifact.capture_status,
+            capture_code=artifact.capture_code,
+            operation=artifact.operation,
+            service_name=artifact.service_name,
+            return_code=artifact.return_code,
+            container_status=artifact.container_status,
+            container_exit_code=artifact.container_exit_code,
+            line_count=artifact.line_count,
+            byte_count=artifact.byte_count,
+            truncated=artifact.truncated,
+            captured_at=artifact.captured_at,
+            expires_at=artifact.expires_at,
+        )
+
+
+class DeploymentDiagnosticList(ApiModel):
+    items: list[DeploymentDiagnosticMetadataRead]
+
+
+class DeploymentDiagnosticLineRead(ApiModel):
+    timestamp: str | None
+    stream: DiagnosticStream
+    message: str
+
+
+class DeploymentDiagnosticRead(DeploymentDiagnosticMetadataRead):
+    lines: list[DeploymentDiagnosticLineRead]
+
+    @classmethod
+    def from_artifact(cls, artifact: DeploymentDiagnosticArtifact) -> DeploymentDiagnosticRead:
+        metadata = DeploymentDiagnosticMetadataRead.from_artifact(artifact)
+        return cls(
+            **metadata.model_dump(),
+            lines=[
+                DeploymentDiagnosticLineRead(
+                    timestamp=line.timestamp,
+                    stream=line.stream,
+                    message=line.message,
+                )
+                for line in artifact.lines or ()
+            ],
+        )
 
 
 class ServiceLogLineRead(ApiModel):

@@ -16,6 +16,7 @@ from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
+from heimdall.runtime.deployment_diagnostics import DockerDeploymentDiagnosticCollector
 from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
 from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
 from heimdall.runtime.gateway import NginxGatewayActivator
@@ -166,6 +167,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             gateway,
             secret_store,
             app_settings.git_workspace_root,
+            DockerDeploymentDiagnosticCollector(log_reader, secret_store),
         )
         worker_id = f"{socket.gethostname()}:{os.getpid()}"
         lease_duration = timedelta(seconds=app_settings.worker_lease_seconds)
@@ -175,6 +177,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             worker_id=worker_id,
             lease_duration=lease_duration,
             max_attempts=app_settings.worker_max_attempts,
+            diagnostic_retention=timedelta(days=app_settings.diagnostic_retention_days),
         )
         reconciliation_worker = RuntimeReconciliationWorker(
             PostgresRuntimeReconciliationRepository(database),
@@ -184,6 +187,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             lease_duration=lease_duration,
             retention_duration=timedelta(hours=app_settings.runtime_retention_hours),
             max_attempts=app_settings.worker_max_attempts,
+            diagnostic_retention=timedelta(days=app_settings.diagnostic_retention_days),
         )
         while not stop_event.is_set():
             if worker.run_once():

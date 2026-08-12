@@ -204,14 +204,24 @@ deployment ID 확인, DB active guard, deterministic name과 managed·project·d
 검사를 통과해야 한다.
 
 `deployment_events`는 Worker가 생성한 bounded message와 stable code만 저장한다. child process stderr와
-application stdout, environment 원문은 저장하지 않는다. application stdout·stderr는 bounded snapshot과
-SSE live follow 계약으로만 허용한다. API는 Docker socket 대신 runtime root의 `logs.sock`과
+application stdout, environment 원문을 event row에 저장하지 않는다. 일반 application stdout·stderr는
+bounded snapshot과 SSE live follow 계약으로 제공하고 저장하지 않는다. API는 Docker socket 대신 runtime root의 `logs.sock`과
 `log-stream.sock`에 연결하고, Worker가 immutable deployment snapshot의 service와 deterministic
 container exact label을 다시 검증한 뒤 최근 200줄 또는 tail 200부터의 follow만 읽는다. 알려진
 project secret과 managed database password는 Worker에서 fail-closed exact redaction한 뒤 전달하며
-raw·redacted 로그를 Control DB나 filesystem에 저장하지 않는다. Docker timestamp가 삽입된 line
-경계를 넘어 안전하게 exact 치환할 수 없는 multiline·oversized secret은 로그 원문을 읽기 전에
-redaction unavailable로 차단한다.
+Docker timestamp가 삽입된 line 경계를 넘어 안전하게 exact 치환할 수 없는 multiline·oversized
+secret은 로그 원문을 읽기 전에 redaction unavailable로 차단한다.
+
+배포 실패 진단은 이 일반 로그 비저장 정책의 제한된 예외다. Worker는 NGINX rollback과 이전 Preview
+복구를 먼저 수행하고, 실패한 새 container를 삭제하기 전에 command stdout/stderr와 service별 최근
+200줄을 exact redaction한다. command/service artifact는 각각 최대 256KiB JSONB로
+`deployment_diagnostic_artifacts`에 event·deployment·service와 연결해 기본 30일 저장한다. raw argv와
+environment는 저장하지 않으며 redaction·Docker read 실패는 원문 없이 stable metadata로 남긴다.
+diagnostic transaction 실패는 가용성 복구와 새 자원 cleanup을 막지 않는다. 목록 API는 payload를
+제외하고 단일 artifact API만 bounded line을 반환하며 둘 다 `no-store`다.
+배포 상세의 서비스 로그 영역은 진행 중이거나 성공한 배포에서는 live snapshot/SSE를 사용하고,
+실패한 배포에서는 live 연결을 열지 않고 저장된 command/service artifact나 수집 실패 이유를 같은
+자리에서 조회한다.
 
 구조화 deployment event는 먼저 durable snapshot을 조회하고 active deployment 동안
 `GET /api/deployments/{deploymentId}/events/stream` SSE로 이어 받는다. event insert transaction은
@@ -257,6 +267,9 @@ redaction은 계속 동작하고 새 line 수를 표시하며, 최신 로그 이
 - Docker cleanup 전에 managed label과 deployment ID를 다시 검사하며 이름만 일치하는 외부 resource는 변경하지 않는다.
 - reconciliation cleanup은 삭제 전후 exact label resource를 관찰하며 Docker 명령 실패나 이름
   충돌을 정리 성공으로 기록하지 않는다.
+- 일반 실패와 안전 판정이 끝난 reconciliation cleanup은 bounded diagnostic 저장을 먼저 시도한다.
+  저장 실패도 cleanup을 막지 않지만 실제 active 또는 uncertain generation은 기존 guard대로 삭제하지
+  않는다.
 - service log broker socket parent는 owner-only이고 snapshot·live socket은 `0600`이다. frame 크기,
   동시 처리 수, Docker command timeout과 follow process lifecycle을 제한하며 socket이 안전하지 않으면
   해당 로그 broker만 비활성화하고 deployment Worker loop는 계속 실행한다.
