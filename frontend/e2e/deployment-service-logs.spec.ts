@@ -31,6 +31,10 @@ test('follows live service logs and keeps manual snapshot refresh', async ({ pag
       await route.fulfill({ json: { items: [] } });
       return;
     }
+    if (url.pathname === `/api/deployments/${deploymentId}/diagnostics`) {
+      await route.fulfill({ json: { items: [] } });
+      return;
+    }
     if (url.pathname === `/api/deployments/${deploymentId}/service-logs/stream`) {
       const serviceName = url.searchParams.get('service');
       streamedServices.push(serviceName);
@@ -131,6 +135,10 @@ test('receives structured deployment events over SSE from the last stored event'
       });
       return;
     }
+    if (url.pathname === `/api/deployments/${activeDeploymentId}/diagnostics`) {
+      await route.fulfill({ json: { items: [] } });
+      return;
+    }
     if (url.pathname === `/api/deployments/${activeDeploymentId}/events/stream`) {
       streamCursors.push(url.searchParams.get('after') ?? '');
       currentStatus = 'SUCCEEDED';
@@ -176,4 +184,75 @@ test('receives structured deployment events over SSE from the last stored event'
   await expect(page.getByText('DEPLOYMENT_SUCCEEDED')).toBeVisible();
   await expect(page.getByText('The preview deployment is active')).toBeVisible();
   await expect.poll(() => streamCursors).toEqual(['11']);
+});
+
+test('shows a retained diagnostic artifact after failed resources were cleaned', async ({
+  page,
+}) => {
+  const failedDeploymentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const artifactId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const metadata = {
+    id: artifactId,
+    deploymentId: failedDeploymentId,
+    eventId: 13,
+    kind: 'COMMAND_OUTPUT',
+    failureStage: 'BUILD',
+    failureCode: 'IMAGE_BUILD_FAILED',
+    captureStatus: 'CAPTURED',
+    captureCode: null,
+    operation: 'DOCKER_BUILD',
+    serviceName: 'web',
+    returnCode: 17,
+    containerStatus: null,
+    containerExitCode: null,
+    lineCount: 1,
+    byteCount: 96,
+    truncated: false,
+    capturedAt: '2026-08-10T06:02:00Z',
+    expiresAt: '2026-09-09T06:02:00Z',
+  };
+  await page.route(new RegExp(`/api/deployments/${failedDeploymentId}(?:/.*)?`), async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === `/api/deployments/${failedDeploymentId}`) {
+      await route.fulfill({
+        json: {
+          ...deployment,
+          id: failedDeploymentId,
+          status: 'FAILED',
+          failureStage: 'BUILD',
+          failureCode: 'IMAGE_BUILD_FAILED',
+        },
+      });
+      return;
+    }
+    if (path === `/api/deployments/${failedDeploymentId}/events`) {
+      await route.fulfill({ json: { items: [] } });
+      return;
+    }
+    if (path === `/api/deployments/${failedDeploymentId}/diagnostics`) {
+      await route.fulfill({ json: { items: [metadata] } });
+      return;
+    }
+    if (path === `/api/deployments/${failedDeploymentId}/diagnostics/${artifactId}`) {
+      await route.fulfill({
+        json: {
+          ...metadata,
+          lines: [{ timestamp: null, stream: 'STDERR', message: 'dependency download failed' }],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ status: 404, json: { code: 'NOT_FOUND' } });
+  });
+
+  await page.goto(`/deployments/${failedDeploymentId}`);
+
+  await expect(page.getByRole('heading', { name: '서비스 로그' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '실패 진단 로그' })).toHaveCount(0);
+  await expect(
+    page.getByText('실패 시 수집한 로그 또는 수집하지 못한 이유를 30일간 보관합니다'),
+  ).toBeVisible();
+  await expect(page.getByRole('combobox', { name: '로그 항목 선택' })).toHaveValue(artifactId);
+  await expect(page.getByText('Event #13 · 1줄')).toBeVisible();
+  await expect(page.getByText('dependency download failed')).toBeVisible();
 });

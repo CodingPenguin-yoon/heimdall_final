@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from heimdall.deployments.diagnostics import FailedCommandOutput
 from heimdall.deployments.models import Deployment
 from heimdall.deployments.worker import RecoveryDisposition, RuntimeFailure, RuntimeProgress
 from heimdall.runtime.docker import CandidateGeneration, DockerRuntime
@@ -599,7 +600,20 @@ class NginxGatewayActivator:
             resolved = failure or RuntimeFailure(
                 "ACTIVATION", "GATEWAY_COMMAND_FAILED", retryable=True
             )
-            raise resolved from error
+            raise RuntimeFailure(
+                resolved.stage,
+                resolved.code,
+                resolved.retryable,
+                resolved.cleanup_candidate,
+                FailedCommandOutput(
+                    operation="GATEWAY_DOCKER_COMMAND",
+                    return_code=error.result.returncode,
+                    stdout=error.result.stdout,
+                    stderr=error.result.stderr,
+                    stdout_truncated=error.result.stdout_truncated,
+                    stderr_truncated=error.result.stderr_truncated,
+                ),
+            ) from error
 
     def _run_ignored(self, arguments: list[str], *, heartbeat: Callable[[], None] | None = None):
         try:

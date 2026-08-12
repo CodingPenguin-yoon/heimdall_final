@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from heimdall.common.errors import AppError
+from heimdall.deployments.diagnostics import (
+    DeploymentDiagnosticArtifact,
+    DeploymentDiagnosticNotFoundError,
+    DiagnosticArtifactDraft,
+)
 from heimdall.deployments.event_stream import (
     DeploymentEventStreamEnd,
     DeploymentEventStreamError,
@@ -205,6 +210,42 @@ class DeploymentService:
     def events(self, deployment_id: UUID) -> Sequence[DeploymentEvent]:
         self.get(deployment_id)
         return self._repository.list_events(deployment_id)
+
+    def diagnostics(self, deployment_id: UUID) -> Sequence[DeploymentDiagnosticArtifact]:
+        self.get(deployment_id)
+        return self._repository.list_diagnostics(deployment_id)
+
+    def diagnostic(
+        self,
+        deployment_id: UUID,
+        artifact_id: UUID,
+    ) -> DeploymentDiagnosticArtifact:
+        self.get(deployment_id)
+        try:
+            return self._repository.get_diagnostic(deployment_id, artifact_id)
+        except DeploymentDiagnosticNotFoundError as error:
+            raise AppError(
+                404,
+                "DEPLOYMENT_DIAGNOSTIC_NOT_FOUND",
+                "Deployment diagnostic was not found or has expired",
+            ) from error
+
+    def record_reconciliation_diagnostics(
+        self,
+        deployment_id: UUID,
+        *,
+        failure_stage: str,
+        failure_code: str,
+        artifacts: Sequence[DiagnosticArtifactDraft],
+        retention: timedelta,
+    ) -> DeploymentEvent:
+        return self._repository.record_reconciliation_diagnostics(
+            deployment_id,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            artifacts=artifacts,
+            retention=retention,
+        )
 
     def open_event_stream(
         self,

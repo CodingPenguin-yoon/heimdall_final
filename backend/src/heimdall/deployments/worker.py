@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
+from heimdall.deployments.diagnostics import DiagnosticArtifactDraft, FailedCommandOutput
 from heimdall.deployments.models import (
     Deployment,
     DeploymentClaimLostError,
@@ -20,6 +22,7 @@ class RuntimeFailure(RuntimeError):
     code: str
     retryable: bool = False
     cleanup_candidate: bool = True
+    command_output: FailedCommandOutput | None = field(default=None, repr=False)
 
 
 class RecoveryDisposition(StrEnum):
@@ -34,6 +37,12 @@ class RuntimeProcessor(Protocol):
     def process(self, deployment: Deployment, progress: RuntimeProgress) -> None: ...
 
     def cleanup_candidate(self, deployment: Deployment) -> None: ...
+
+    def rollback_candidate(self, deployment: Deployment) -> None: ...
+
+    def capture_diagnostics(
+        self, deployment: Deployment, failure: RuntimeFailure, progress: RuntimeProgress
+    ) -> tuple[DiagnosticArtifactDraft, ...]: ...
 
 
 class RuntimeProgress:
@@ -70,6 +79,7 @@ class DeploymentWorker:
         lease_duration: timedelta,
         max_attempts: int = 3,
         retry_base_delay: timedelta = timedelta(seconds=5),
+        diagnostic_retention: timedelta | None = None,
     ) -> None:
         if not worker_id or len(worker_id) > 128:
             raise ValueError("worker_id must be between 1 and 128 characters")
@@ -77,16 +87,22 @@ class DeploymentWorker:
             raise ValueError("lease_duration must be positive")
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
+        if diagnostic_retention is not None and diagnostic_retention <= timedelta(0):
+            raise ValueError("diagnostic_retention must be positive")
         self._repository = repository
         self._processor = processor
         self._worker_id = worker_id
         self._lease_duration = lease_duration
         self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
+        self._diagnostic_retention = diagnostic_retention
 
     def run_once(self) -> bool:
         claim = self._repository.claim_next(self._worker_id, self._lease_duration)
         if claim is None:
+            if self._diagnostic_retention is not None:
+                with suppress(Exception):
+                    self._repository.purge_expired_diagnostics(limit=100)
             return False
         progress = RuntimeProgress(self._repository, claim, self._lease_duration)
         try:
@@ -129,6 +145,36 @@ class DeploymentWorker:
 
     def _handle_failure(self, claim: DeploymentJobClaim, failure: RuntimeFailure) -> None:
         if failure.cleanup_candidate:
+            if self._diagnostic_retention is not None:
+                rollback_ready = False
+                try:
+                    self._processor.rollback_candidate(claim.deployment)
+                    rollback_ready = True
+                except Exception:
+                    pass
+                if rollback_ready:
+                    try:
+                        progress = RuntimeProgress(
+                            self._repository,
+                            claim,
+                            self._lease_duration,
+                        )
+                        artifacts = self._processor.capture_diagnostics(
+                            claim.deployment,
+                            failure,
+                            progress,
+                        )
+                        self._repository.record_diagnostics(
+                            claim,
+                            failure_stage=failure.stage,
+                            failure_code=failure.code,
+                            artifacts=artifacts,
+                            retention=self._diagnostic_retention,
+                        )
+                    except DeploymentClaimLostError:
+                        return
+                    except Exception:
+                        pass
             try:
                 self._processor.cleanup_candidate(claim.deployment)
             except DeploymentClaimLostError:

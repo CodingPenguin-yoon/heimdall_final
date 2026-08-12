@@ -14,7 +14,11 @@ from heimdall.runtime.logs import (
     ServiceLogStreamEnd,
     ServiceLogStreamLine,
 )
-from heimdall.runtime.process import CommandResult, SubprocessCommandRunner
+from heimdall.runtime.process import (
+    CommandExecutionError,
+    CommandResult,
+    SubprocessCommandRunner,
+)
 from heimdall.runtime.process_stream import (
     CommandOutputLine,
     CommandOutputStream,
@@ -401,3 +405,36 @@ def test_command_runner_drains_but_bounds_large_process_output() -> None:
     assert result.stderr.endswith("TAIL")
     assert result.stdout_truncated is True
     assert result.stderr_truncated is True
+
+
+def test_command_runner_preserves_bounded_output_on_failure() -> None:
+    with pytest.raises(CommandExecutionError) as raised:
+        SubprocessCommandRunner().run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; print('before failure'); "
+                    "print('reason', file=sys.stderr); sys.exit(17)"
+                ),
+            ],
+            timeout_seconds=5,
+        )
+
+    assert raised.value.returncode == 17
+    assert raised.value.result.stdout == "before failure\n"
+    assert raised.value.result.stderr == "reason\n"
+
+
+def test_command_runner_preserves_partial_output_on_timeout() -> None:
+    with pytest.raises(CommandExecutionError) as raised:
+        SubprocessCommandRunner(heartbeat_interval_seconds=0.05).run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time; print('before timeout', flush=True); time.sleep(5)",
+            ],
+            timeout_seconds=0.1,
+        )
+
+    assert raised.value.result.stdout == "before timeout\n"

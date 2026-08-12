@@ -512,6 +512,12 @@
   background: #ecfdf3;
 }
 
+.service-log-connection.retained {
+  color: #175cd3;
+  border-color: #b2ccff;
+  background: #eff4ff;
+}
+
 .service-log-connection.reconnecting,
 .service-log-connection.connecting {
   color: #b54708;
@@ -629,6 +635,19 @@
 .service-log-error small {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
   font-size: 0.6rem;
+}
+
+.service-log-artifact-summary {
+  margin-left: 0.2rem;
+}
+
+.service-log-retained-truncated {
+  display: block;
+  padding: 0.65rem 0.8rem;
+  color: #fdb022;
+  border-top: 1px solid rgb(255 255 255 / 7%);
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.62rem;
 }
 
 .deployment-result {

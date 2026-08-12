@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   getDeployment,
+  getDeploymentDiagnostic,
   getServiceLogs,
   listDeploymentEvents,
+  listDeploymentDiagnostics,
   subscribeDeploymentEvents,
   subscribeServiceLogs,
 } from '@/entities/deployment/api';
@@ -15,15 +17,23 @@ import type {
   DeploymentEventStreamHandlers,
   ServiceLogStreamHandlers,
 } from '@/entities/deployment/api';
-import type { Deployment, DeploymentEvent, ServiceLogSnapshot } from '@/entities/deployment/types';
+import type {
+  Deployment,
+  DeploymentDiagnostic,
+  DeploymentDiagnosticMetadata,
+  DeploymentEvent,
+  ServiceLogSnapshot,
+} from '@/entities/deployment/types';
 import { ApiError } from '@/shared/api/client';
 
 import { DeploymentDetailPage } from './DeploymentDetailPage';
 
 vi.mock('@/entities/deployment/api', () => ({
   getDeployment: vi.fn(),
+  getDeploymentDiagnostic: vi.fn(),
   getServiceLogs: vi.fn(),
   listDeploymentEvents: vi.fn(),
+  listDeploymentDiagnostics: vi.fn(),
   subscribeDeploymentEvents: vi.fn(),
   subscribeServiceLogs: vi.fn(),
 }));
@@ -83,6 +93,32 @@ const serviceLogs: ServiceLogSnapshot = {
   truncated: false,
 };
 
+const diagnosticMetadata: DeploymentDiagnosticMetadata = {
+  id: '4f80b331-1314-4980-b8ee-4db44c09f0d9',
+  deploymentId: deployment.id,
+  eventId: 3,
+  kind: 'COMMAND_OUTPUT',
+  failureStage: 'BUILD',
+  failureCode: 'IMAGE_BUILD_FAILED',
+  captureStatus: 'CAPTURED',
+  captureCode: null,
+  operation: 'DOCKER_BUILD',
+  serviceName: null,
+  returnCode: 17,
+  containerStatus: null,
+  containerExitCode: null,
+  lineCount: 1,
+  byteCount: 80,
+  truncated: false,
+  capturedAt: '2026-08-06T03:02:00Z',
+  expiresAt: '2026-09-05T03:02:00Z',
+};
+
+const diagnostic: DeploymentDiagnostic = {
+  ...diagnosticMetadata,
+  lines: [{ timestamp: null, stream: 'STDERR', message: 'package installation failed' }],
+};
+
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -105,6 +141,8 @@ describe('DeploymentDetailPage', () => {
     latestEventStreamHandlers = null;
     vi.mocked(getDeployment).mockResolvedValue(deployment);
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: events });
+    vi.mocked(listDeploymentDiagnostics).mockResolvedValue({ items: [] });
+    vi.mocked(getDeploymentDiagnostic).mockResolvedValue(diagnostic);
     vi.mocked(getServiceLogs).mockResolvedValue(serviceLogs);
     vi.mocked(subscribeDeploymentEvents).mockImplementation((_, __, handlers) => {
       latestEventStreamHandlers = handlers;
@@ -211,6 +249,32 @@ describe('DeploymentDetailPage', () => {
     expect(screen.getByText('HEALTH')).toBeInTheDocument();
     expect(screen.getByText('SERVICE_HEALTH_CHECK_FAILED')).toBeInTheDocument();
     expect(screen.getByText('서비스 상태 확인').closest('li')).toHaveClass('failed');
+  });
+
+  it('shows retained failure diagnostics linked to the deployment event', async () => {
+    vi.mocked(getDeployment).mockResolvedValue({
+      ...deployment,
+      status: 'FAILED',
+      failureStage: 'BUILD',
+      failureCode: 'IMAGE_BUILD_FAILED',
+      terminalAt: '2026-08-06T03:02:00Z',
+    });
+    vi.mocked(listDeploymentDiagnostics).mockResolvedValue({ items: [diagnosticMetadata] });
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: '서비스 로그' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: '실패 진단 로그' })).not.toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent(
+      '실패 시 수집한 로그 또는 수집하지 못한 이유를 30일간 보관합니다',
+    );
+    expect(await screen.findByRole('combobox', { name: '로그 항목 선택' })).toHaveValue(
+      diagnosticMetadata.id,
+    );
+    expect(await screen.findByText('Event #3 · 1줄')).toBeInTheDocument();
+    const output = await screen.findByRole('log', { name: '저장된 실패 로그' });
+    expect(await within(output).findByText('package installation failed')).toBeInTheDocument();
+    expect(getDeploymentDiagnostic).toHaveBeenCalledWith(deployment.id, diagnosticMetadata.id);
+    expect(subscribeServiceLogs).not.toHaveBeenCalled();
   });
 
   it('shows live service logs with stream separation and keeps snapshot refresh as fallback', async () => {

@@ -21,9 +21,10 @@ class CommandResult:
 
 
 class CommandExecutionError(RuntimeError):
-    def __init__(self, returncode: int) -> None:
+    def __init__(self, result: CommandResult | int) -> None:
         super().__init__("external command failed")
-        self.returncode = returncode
+        self.result = result if isinstance(result, CommandResult) else CommandResult(result, "")
+        self.returncode = self.result.returncode
 
 
 class CommandRunner(Protocol):
@@ -78,6 +79,8 @@ class SubprocessCommandRunner:
         stderr_capture = _BoundedCapture(process.stderr)
         stdout_capture.start()
         stderr_capture.start()
+        timeout_error: subprocess.TimeoutExpired | None = None
+        returncode = -1
         try:
             while True:
                 remaining = deadline - time.monotonic()
@@ -91,13 +94,12 @@ class SubprocessCommandRunner:
                 except subprocess.TimeoutExpired:
                     if heartbeat is not None:
                         heartbeat()
+        except subprocess.TimeoutExpired as error:
+            timeout_error = error
+            _terminate(process)
+            returncode = process.returncode if process.returncode is not None else -1
         except BaseException:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+            _terminate(process)
             raise
         finally:
             stdout_capture.join()
@@ -110,9 +112,20 @@ class SubprocessCommandRunner:
             stdout_truncated=stdout_capture.truncated,
             stderr_truncated=stderr_capture.truncated,
         )
+        if timeout_error is not None:
+            raise CommandExecutionError(result) from timeout_error
         if check and result.returncode != 0:
-            raise CommandExecutionError(result.returncode)
+            raise CommandExecutionError(result)
         return result
+
+
+def _terminate(process: subprocess.Popen) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 class _BoundedCapture:

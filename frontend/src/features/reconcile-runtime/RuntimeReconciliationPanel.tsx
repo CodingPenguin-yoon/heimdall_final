@@ -79,35 +79,39 @@ export function RuntimeReconciliationPanel({
       {item?.completedAt ? <small>최근 처리: {formatDate(item.completedAt)}</small> : null}
       {message ? <div className="inline-error">{message}</div> : null}
 
-      <div className="reconciliation-actions">
-        <button
-          className="button secondary"
-          disabled={busy}
-          onClick={() => mutation.mutate({ action: 'RECONCILE' })}
-        >
-          지금 안전 확인
-        </button>
-        <label>
-          강제 정리 확인
-          <input
-            aria-label="강제 정리 확인 Deployment ID"
-            value={confirmation}
-            placeholder={deployment.id}
-            onChange={(event) => setConfirmation(event.target.value)}
-          />
-        </label>
-        <button
-          className="button danger"
-          disabled={busy || confirmation !== deployment.id}
-          onClick={() => mutation.mutate({ action: 'FORCE_CLEANUP', confirmation })}
-        >
-          보존 자원 강제 정리
-        </button>
-      </div>
-      <p className="reconciliation-warning">
-        강제 정리는 전체 Deployment ID가 일치할 때만 요청되며 active runtime이면 Worker가
-        거부합니다.
-      </p>
+      {item?.state !== 'RESOLVED' ? (
+        <div className="reconciliation-actions">
+          <button
+            className="button secondary"
+            disabled={busy}
+            onClick={() => mutation.mutate({ action: 'RECONCILE' })}
+          >
+            지금 안전 확인
+          </button>
+          <label>
+            강제 정리 확인
+            <input
+              aria-label="강제 정리 확인 Deployment ID"
+              value={confirmation}
+              placeholder={deployment.id}
+              onChange={(event) => setConfirmation(event.target.value)}
+            />
+          </label>
+          <button
+            className="button danger"
+            disabled={busy || confirmation !== deployment.id}
+            onClick={() => mutation.mutate({ action: 'FORCE_CLEANUP', confirmation })}
+          >
+            보존 자원 강제 정리
+          </button>
+        </div>
+      ) : null}
+      {item?.state !== 'RESOLVED' ? (
+        <p className="reconciliation-warning">
+          강제 정리는 전체 Deployment ID가 일치할 때만 요청되며 active runtime이면 Worker가
+          거부합니다.
+        </p>
+      ) : null}
     </div>
   );
 }

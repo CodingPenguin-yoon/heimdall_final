@@ -54,6 +54,8 @@ class MemoryJobRepository:
         self.transitions: list[DeploymentStatus] = []
         self.retry_at: datetime | None = None
         self.completed: str | None = None
+        self.diagnostic_records: list[tuple[str, str]] = []
+        self.diagnostic_error: Exception | None = None
 
     def claim_next(self, worker_id: str, lease_duration: timedelta) -> DeploymentJobClaim | None:
         if not self.claim_available:
@@ -120,12 +122,31 @@ class MemoryJobRepository:
     def list_events(self, deployment_id, limit: int = 100) -> list[DeploymentEvent]:
         return []
 
+    def record_diagnostics(
+        self,
+        claim,
+        *,
+        failure_stage,
+        failure_code,
+        artifacts,
+        retention,
+    ):
+        assert claim == self.claim
+        assert retention > timedelta(0)
+        self.diagnostic_records.append((failure_stage, failure_code))
+        if self.diagnostic_error is not None:
+            raise self.diagnostic_error
+
+    def purge_expired_diagnostics(self, limit=100):
+        return 0
+
 
 class SuccessfulProcessor:
     def __init__(self, recovery: RecoveryDisposition = RecoveryDisposition.SAFE_TO_RETRY) -> None:
         self.cleaned = False
         self.processed = False
         self.recovery = recovery
+        self.operations: list[str] = []
 
     def recover(self, item: Deployment, progress: RuntimeProgress) -> RecoveryDisposition:
         progress.heartbeat()
@@ -138,6 +159,14 @@ class SuccessfulProcessor:
 
     def cleanup_candidate(self, item: Deployment) -> None:
         self.cleaned = True
+        self.operations.append("cleanup")
+
+    def rollback_candidate(self, item: Deployment) -> None:
+        self.operations.append("rollback")
+
+    def capture_diagnostics(self, item: Deployment, failure: RuntimeFailure, progress):
+        self.operations.append("capture")
+        return ()
 
 
 class FailingProcessor(SuccessfulProcessor):
@@ -149,13 +178,19 @@ class FailingProcessor(SuccessfulProcessor):
         raise self.failure
 
 
-def worker(repository: MemoryJobRepository, processor) -> DeploymentWorker:
+def worker(
+    repository: MemoryJobRepository,
+    processor,
+    *,
+    diagnostics: bool = False,
+) -> DeploymentWorker:
     return DeploymentWorker(
         repository,
         processor,
         worker_id="worker-one",
         lease_duration=timedelta(minutes=1),
         retry_base_delay=timedelta(seconds=1),
+        diagnostic_retention=timedelta(days=30) if diagnostics else None,
     )
 
 
@@ -234,6 +269,40 @@ def test_non_retryable_failure_is_terminal_and_candidate_is_cleaned() -> None:
 
     assert processor.cleaned is True
     assert repository.completed == "FAILED:BUILD:IMAGE_BUILD_FAILED"
+
+
+def test_diagnostics_are_recorded_after_rollback_and_before_cleanup() -> None:
+    repository = MemoryJobRepository(deployment())
+    processor = FailingProcessor(RuntimeFailure("START", "SERVICE_START_FAILED"))
+
+    worker(repository, processor, diagnostics=True).run_once()
+
+    assert processor.operations == ["rollback", "capture", "cleanup"]
+    assert repository.diagnostic_records == [("START", "SERVICE_START_FAILED")]
+    assert repository.completed == "FAILED:START:SERVICE_START_FAILED"
+
+
+def test_diagnostic_database_failure_does_not_block_cleanup_or_terminal_state() -> None:
+    repository = MemoryJobRepository(deployment())
+    repository.diagnostic_error = RuntimeError("database unavailable")
+    processor = FailingProcessor(RuntimeFailure("BUILD", "IMAGE_BUILD_FAILED"))
+
+    worker(repository, processor, diagnostics=True).run_once()
+
+    assert processor.operations == ["rollback", "capture", "cleanup"]
+    assert repository.completed == "FAILED:BUILD:IMAGE_BUILD_FAILED"
+
+
+def test_lost_claim_during_diagnostic_capture_does_not_delete_runtime() -> None:
+    repository = MemoryJobRepository(deployment())
+    repository.diagnostic_error = DeploymentClaimLostError()
+    processor = FailingProcessor(RuntimeFailure("START", "SERVICE_START_FAILED"))
+
+    worker(repository, processor, diagnostics=True).run_once()
+
+    assert processor.operations == ["rollback", "capture"]
+    assert processor.cleaned is False
+    assert repository.completed is None
 
 
 def test_unknown_exception_uses_a_stable_failure_code() -> None:

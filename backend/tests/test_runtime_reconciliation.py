@@ -125,6 +125,7 @@ class MemoryDeployments:
     def __init__(self, item: Deployment) -> None:
         self.item = item
         self.reconciled = False
+        self.diagnostic_records: list[str] = []
 
     def get(self, deployment_id: UUID) -> Deployment:
         assert deployment_id == self.item.id
@@ -144,6 +145,20 @@ class MemoryDeployments:
         )
         return self.item
 
+    def record_reconciliation_diagnostics(
+        self,
+        deployment_id,
+        *,
+        failure_stage,
+        failure_code,
+        artifacts,
+        retention,
+    ):
+        assert deployment_id == self.item.id
+        assert failure_stage == "RECONCILIATION"
+        assert retention > timedelta(0)
+        self.diagnostic_records.append(failure_code)
+
 
 class Processor:
     def __init__(
@@ -154,22 +169,34 @@ class Processor:
         self.disposition = disposition
         self.failure = failure
         self.cleaned = False
+        self.operations: list[str] = []
 
     def recover(self, deployment, progress):
         progress.heartbeat()
         return self.disposition
 
     def cleanup_candidate_verified(self, deployment, progress):
+        self.operations.append("cleanup")
         progress.heartbeat()
         if self.failure is not None:
             raise self.failure
         self.cleaned = True
+
+    def prepare_reconciliation_cleanup(self, deployment, progress):
+        self.operations.append("rollback")
+        progress.heartbeat()
+
+    def capture_diagnostics(self, deployment, failure, progress):
+        self.operations.append("capture")
+        return ()
 
 
 def worker(
     repository: MemoryReconciliations,
     deployments: MemoryDeployments,
     processor: Processor,
+    *,
+    diagnostics: bool = False,
 ) -> RuntimeReconciliationWorker:
     return RuntimeReconciliationWorker(
         repository,
@@ -178,6 +205,7 @@ def worker(
         worker_id="reconciliation-worker",
         lease_duration=timedelta(minutes=1),
         retention_duration=timedelta(hours=72),
+        diagnostic_retention=timedelta(days=30) if diagnostics else None,
     )
 
 
@@ -205,6 +233,22 @@ def test_safe_inactive_candidate_is_cleaned() -> None:
     worker(repository, MemoryDeployments(deployment), processor).run_once()
 
     assert processor.cleaned is True
+    assert repository.resolved == (
+        ReconciliationResult.CLEANED,
+        "INACTIVE_CANDIDATE_CLEANED",
+    )
+
+
+def test_safe_cleanup_captures_diagnostics_after_rollback_and_before_delete() -> None:
+    deployment = uncertain_deployment()
+    repository = MemoryReconciliations(reconciliation(deployment.id))
+    deployments = MemoryDeployments(deployment)
+    processor = Processor(RecoveryDisposition.SAFE_TO_RETRY)
+
+    worker(repository, deployments, processor, diagnostics=True).run_once()
+
+    assert processor.operations == ["rollback", "capture", "cleanup"]
+    assert deployments.diagnostic_records == ["INACTIVE_CANDIDATE_CLEANUP"]
     assert repository.resolved == (
         ReconciliationResult.CLEANED,
         "INACTIVE_CANDIDATE_CLEANED",
