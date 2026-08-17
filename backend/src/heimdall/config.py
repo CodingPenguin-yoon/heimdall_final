@@ -23,7 +23,6 @@ class Settings:
     project_database_runtime_host: str
     project_database_runtime_port: int
     docker_executable: str
-    managed_database_container: str
     nginx_image: str
     runtime_command_timeout_seconds: float
     runtime_health_timeout_seconds: float
@@ -65,15 +64,12 @@ class Settings:
             in {"1", "true", "yes"},
             project_database_admin_url=os.environ.get("HEIMDALL_PROJECT_DB_ADMIN_URL") or None,
             project_database_runtime_host=os.environ.get(
-                "HEIMDALL_PROJECT_DB_RUNTIME_HOST", "managed-postgres"
+                "HEIMDALL_PROJECT_DB_RUNTIME_HOST", "host.docker.internal"
             ),
             project_database_runtime_port=int(
-                os.environ.get("HEIMDALL_PROJECT_DB_RUNTIME_PORT", "5432")
+                os.environ.get("HEIMDALL_PROJECT_DB_RUNTIME_PORT", "55433")
             ),
             docker_executable=os.environ.get("HEIMDALL_DOCKER_EXECUTABLE", "docker"),
-            managed_database_container=os.environ.get(
-                "HEIMDALL_MANAGED_DB_CONTAINER", "heimdall-managed-postgres"
-            ),
             nginx_image=os.environ.get("HEIMDALL_NGINX_IMAGE", "nginx:1.29-alpine"),
             runtime_command_timeout_seconds=float(
                 os.environ.get("HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS", "900")

@@ -145,7 +145,7 @@ def test_project_database_is_provisioned_to_active_without_returning_password() 
         projects,
         MemorySecretStore(),
         provisioner,
-        "managed-postgres",
+        "managed-db.internal",
         5432,
     )
 
@@ -153,6 +153,6 @@ def test_project_database_is_provisioned_to_active_without_returning_password() 
 
     assert result.status == "ACTIVE"
     assert result.connected_services == ["api"]
-    assert result.host == "managed-postgres"
+    assert result.host == "managed-db.internal"
     assert provisioner.steps == ["role", "database", "privileges", "login"]
     assert "password" not in result.model_dump_json().lower()

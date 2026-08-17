@@ -40,7 +40,7 @@ def test_two_projects_receive_isolated_managed_databases(tmp_path: Path) -> None
             projects,
             FileSecretStore(tmp_path),
             PostgresProjectDatabaseProvisioner(MANAGED_URL),
-            "managed-postgres",
+            "managed-db.internal",
             5432,
         )
 

@@ -22,7 +22,7 @@ Public GitHub 저장소 등록
 - service 내부 Docker DNS 통신
 - path 기반 project gateway route
 - service별 plain·secret 환경변수
-- 별도 Managed PostgreSQL cluster와 project별 database·role
+- 외부 TCP Managed PostgreSQL cluster와 project별 database·role
 - DB 접근 service 전용 `DATABASE_*` 계약과 password file
 - 수동 배포
 - exact commit source rebuild
@@ -41,6 +41,7 @@ Public GitHub 저장소 등록
 - password rotation과 사람용 단기 DB credential
 - project database backup·restore·purge 자동화
 - volume/data rollback
+- Kubernetes runtime과 multi-node scheduling
 - 다중 사용자와 역할
 - public domain, TLS, multi-host
 - application stdout/stderr 무제한 수집·장기 저장·검색·다운로드

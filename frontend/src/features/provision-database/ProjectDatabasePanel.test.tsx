@@ -40,7 +40,7 @@ describe('ProjectDatabasePanel', () => {
       databaseName: 'hd_db_d7b86499b5a6485d9daa58a2d3354910',
       username: 'hd_role_d7b86499b5a6485d9daa58a2d3354910',
       schemaName: 'app',
-      host: 'managed-postgres',
+      host: 'managed-db.internal',
       port: 5432,
       updatedAt: '2026-08-03T10:00:00Z',
     });
@@ -57,7 +57,7 @@ describe('ProjectDatabasePanel', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Database 생성' }));
 
-    expect(await screen.findByText(/managed-postgres/)).toBeInTheDocument();
+    expect(await screen.findByText(/managed-db\.internal/)).toBeInTheDocument();
     expect(screen.getByText('hd_db_d7b86499b5a6485d9daa58a2d3354910')).toBeInTheDocument();
     expect(screen.getByText(/DATABASE_PASSWORD_FILE/)).toBeInTheDocument();
   });

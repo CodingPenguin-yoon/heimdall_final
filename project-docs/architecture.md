@@ -7,13 +7,15 @@ Browser -> NGINX React UI -> FastAPI API -> Control PostgreSQL
                               |            |
                               |            +-> durable deployment job
                               |
-                              +-> Managed PostgreSQL
+                              +-> private TCP -> Managed PostgreSQL VM
                                   project별 database·role
 
 Python Worker -> PostgreSQL claim/lease
               -> Git exact checkout
               -> Docker generation candidate
               -> project NGINX activation
+
+Project container -> private TCP -> Managed PostgreSQL VM
 
 FastAPI API -> owner-only Unix socket -> Worker snapshot log broker -> exact-label Docker logs
                                     -> Worker live log broker     -> exact-label Docker logs --follow
@@ -25,10 +27,10 @@ API와 Worker가 동시에 시작될 수 있으므로 schema migration은 Postgr
 
 ## 로컬 Compose 경계
 
-Docker Desktop의 `infra/dev/compose.yaml`은 Control PostgreSQL, Managed PostgreSQL, FastAPI API,
-deployment Worker와 NGINX frontend를 `heimdall-python-local` project로 함께 관리한다. PostgreSQL은
-기존 named volume을 재사용하고 API·Worker·frontend와 두 DB에는 `restart: unless-stopped`를
-적용한다.
+Docker Desktop의 `infra/dev/compose.yaml`은 Control PostgreSQL, FastAPI API, deployment Worker와
+NGINX frontend를 `heimdall-python-local` project로 관리한다. Managed PostgreSQL은 상위 폴더의
+`heimdall-managed-db/compose.yaml`이 별도 project와 named volume으로 관리한다. 두 Compose는 Docker
+network를 공유하지 않고 외부 TCP endpoint만 계약으로 사용한다.
 
 API와 Worker는 같은 Backend image를 사용하지만 Docker socket은 Worker service에만 mount한다.
 runtime과 Git workspace는 host Docker daemon도 source path를 해석할 수 있도록 `.env`의 host 절대
@@ -38,10 +40,10 @@ runtime bind와 분리된 `broker-sockets` named volume을 사용한다. fronten
 `127.0.0.1`에만 bind한다.
 
 Compose Worker는 candidate health와 stable preview port를 `host.docker.internal`에서 probe한다.
-host 직접 실행은 기본 `127.0.0.1` probe를 유지한다. Managed PostgreSQL container 재생성으로 active
-generation network 연결이 사라질 수 있으므로 Worker 시작 시 Control DB active metadata,
-deployment snapshot과 exact Docker network label을 대조한다. DB 접근 service가 있는 실제 active
-network에만 `managed-postgres` alias를 복원하며 absent·conflict network는 변경하지 않는다.
+host 직접 실행은 기본 `127.0.0.1` probe를 유지한다. 로컬 API와 DB 접근 project container는
+`host.docker.internal:55433`으로 Managed DB에 연결한다. 운영에서는 API와 project container가 모두
+해석할 수 있는 private DNS(기본 예: `managed-db.internal:5432`)를 사용하고 방화벽은 Control/Runtime
+VM에서 오는 연결만 허용한다.
 
 ### 장애와 재기동 경계
 
@@ -51,11 +53,10 @@ network에만 `managed-postgres` alias를 복원하며 absent·conflict network�
   Preview의 request path에는 Worker가 포함되지 않는다.
 - Control PostgreSQL은 관리 metadata와 durable job의 원본이다. 중단 중에는 API와 Worker가 관리
   상태를 읽거나 변경할 수 없지만, 기존 project의 request path에는 포함되지 않는다.
-- Managed PostgreSQL은 application data path에 포함된다. 현재 같은 local Compose가 소유하므로 전체
-  stack을 멈추면 DB 접근 project는 service container가 살아 있어도 DB 요청에 실패한다.
-- `compose stop`은 container와 network를 보존한다. `compose down`은 Compose container와 기본
-  network를 삭제하지만 named volume은 보존하며, 다음 Worker 시작 시 active DB network 연결을
-  복원한다. `down -v`는 두 PostgreSQL의 개발 데이터까지 삭제한다.
+- Managed PostgreSQL은 application data path에 포함되지만 Control Plane과 lifecycle·volume을 공유하지
+  않는다. Control Plane을 중지해도 Managed DB와 배포된 project의 DB 요청은 유지된다.
+- 각 project의 `compose stop/down`은 다른 project를 변경하지 않는다. `down -v`는 실행한 Compose가
+  소유한 PostgreSQL volume만 삭제하므로 명시적인 데이터 초기화에만 사용한다.
 
 ## 코드 책임 지도
 
@@ -80,7 +81,7 @@ heimdall/
 | 경로 | 책임 |
 | --- | --- |
 | `backend/src/heimdall/main.py` | FastAPI lifespan에서 DB 연결과 repository/service를 조립하고 `/api` router를 등록한다. Docker에는 접근하지 않는다. |
-| `backend/src/heimdall/worker.py` | 배포 Worker의 composition root다. 시작 시 active Managed DB network를 복원하고 deployment/reconciliation loop와 service-log broker를 실행한다. |
+| `backend/src/heimdall/worker.py` | 배포 Worker의 composition root다. deployment/reconciliation loop와 service-log broker를 실행한다. |
 | `backend/src/heimdall/config.py` | `HEIMDALL_*` 환경변수를 검증해 API와 Worker의 공통 `Settings`를 만든다. host/Compose probe host와 broker socket root도 여기서 분리한다. |
 | `backend/src/heimdall/database.py` | Control PostgreSQL pool, transaction과 schema migration을 소유한다. |
 | `backend/src/heimdall/api.py` | project, deployment, project database와 runtime router를 하나의 `/api` 아래에 결합하고 health endpoint를 제공한다. |
@@ -100,7 +101,7 @@ heimdall/
 | 경로 | 책임 |
 | --- | --- |
 | `runtime/service.py` | 하나의 deployment를 `Git checkout → candidate 생성 → Gateway 활성화 → metadata 확정 → 이전 generation 정리` 순서로 조정한다. |
-| `runtime/docker.py` | Docker image, generation network와 service container를 생성·관찰·정리한다. Managed DB network 연결과 active service restart policy도 담당한다. |
+| `runtime/docker.py` | Docker image, generation network와 service container를 생성·관찰·정리하고 active service restart policy를 관리한다. 외부 Managed DB에는 Docker network mutation 없이 endpoint 환경변수만 전달한다. |
 | `runtime/gateway.py` | project별 NGINX gateway 생성, candidate route 검증, network rebase, 동일 Preview port 재생성과 실패 복원을 담당한다. |
 | `runtime/gateway_config.py`, `gateway_probe.py` | NGINX 설정 렌더링과 host route 관찰을 분리한다. |
 | `runtime/repository.py`, `status.py`, `api.py` | `project_runtimes`의 active deployment/network/Preview port를 저장하고 관리자 조회 API로 제공한다. |
@@ -121,7 +122,7 @@ heimdall/
 | `frontend/src/shared/` | 공통 HTTP client, formatting, UI primitive와 token·layout·page CSS를 제공한다. |
 | `backend/Dockerfile` | API와 Worker가 공유하는 Python image에 Git과 host Docker daemon 호환 CLI를 포함한다. |
 | `frontend/Dockerfile`, `frontend/nginx.conf` | React production build를 NGINX로 제공하고 `/api`를 API service로 proxy하며 SSE buffering을 끈다. |
-| `infra/dev/compose.yaml` | 두 PostgreSQL, API, Worker와 frontend의 local lifecycle, health, port, volume과 Docker socket 경계를 선언한다. |
+| `infra/dev/compose.yaml` | Control PostgreSQL, API, Worker와 frontend의 local lifecycle, health, port, volume과 Docker socket 경계를 선언한다. |
 
 ### 주요 호출 흐름
 
@@ -130,8 +131,8 @@ heimdall/
 2. 배포 요청은 `deployments/router.py`가 snapshot과 durable job을 Control DB에 저장한다. Worker는
    job을 claim한 뒤 `DockerDeploymentProcessor → GitClient → DockerRuntime → NginxGatewayActivator`
    순서로 실행하고 성공 후 active runtime metadata를 확정한다.
-3. Worker 재시작은 `project_runtimes`의 active row와 deployment snapshot을 읽고
-   `DockerRuntime.restore_active_database_network`로 exact Managed DB network 연결만 복원한다.
+3. DB 접근 service는 immutable snapshot의 Managed DB host·port와 owner-only password file을 받아
+   Docker network와 무관하게 외부 PostgreSQL에 연결한다.
 4. 구조화 deployment event SSE는 Control PostgreSQL을 직접 구독한다. Service log 요청은 API의
    Unix broker client에서 Worker broker로 전달되고, Worker만 exact-label Docker logs를 실행한다.
 
@@ -164,7 +165,7 @@ Runtime root
 
 - 사용자는 service별 plain·secret 환경변수를 설정한다.
 - `DATABASE_*`, `HEIMDALL_*`는 예약 prefix라 사용자 override를 거부한다.
-- `projectDatabaseAccess=true` service만 managed DB network와 `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_SCHEMA`, `DATABASE_PASSWORD_FILE`을 받는다.
+- `projectDatabaseAccess=true` service만 외부 Managed DB endpoint의 `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_SCHEMA`, `DATABASE_PASSWORD_FILE`을 받는다.
 - raw password는 environment가 아니라 `/run/secrets/heimdall/project-database-password` read-only file로 전달한다.
 
 ## 배포 상태
@@ -242,8 +243,8 @@ redaction은 계속 동작하고 새 line 수를 표시하며, 최신 로그 이
 ## Runtime generation
 
 - 배포마다 전용 Docker network를 만든다.
-- Worker 시작 시 DB 접근 active generation의 exact network에서 Managed PostgreSQL 연결이 빠졌으면
-  `managed-postgres` alias를 복원한다.
+- Managed PostgreSQL container는 generation network에 연결하지 않는다. DB 접근 service는 고정된
+  외부 TCP endpoint를 사용한다.
 - service alias는 `{service}-g-{generation}`처럼 generation별로 고유하다.
 - project NGINX는 기존·candidate network에 잠시 함께 연결될 수 있다.
 - 실행 중 project NGINX도 stored active network와 candidate network가 다르면 candidate route를

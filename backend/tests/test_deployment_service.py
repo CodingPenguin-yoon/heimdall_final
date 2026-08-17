@@ -21,7 +21,7 @@ class ActiveProjectDatabase:
             "databaseName": "hd_db_one",
             "username": "hd_role_one",
             "schemaName": "app",
-            "host": "managed-postgres",
+            "host": "managed-db.internal",
             "port": 5432,
             "credentialReference": "projects/p1/database/r1/credentials/v1.secret",
             "credentialVersion": 1,
