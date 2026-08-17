@@ -1,6 +1,7 @@
 # Runtime 강제 종료·브라우저 검증 Plan
 
 - 상태: `APPROVED`
+- 구현 결과: `COMPLETE`
 - 날짜: `2026-08-05`
 - 승인 근거: 사용자가 로컬 Heimdall의 배포·복구 검증은 유지하고 GitHub Actions 범위는 취소함
 
