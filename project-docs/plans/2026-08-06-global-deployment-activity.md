@@ -105,7 +105,8 @@ Frontend에서 프로젝트마다 목록 API를 반복 호출해 합치는 방�
 ## 남은 결정
 
 - 후속 후보: 최근 100건을 넘는 이력의 cursor pagination
-- 후속 후보: 배포 상세의 구조화 event log 스트림
+- 후속 완료: 배포 상세의 구조화 event log 스트림은
+  `2026-08-10-deployment-event-sse-and-log-controls.md`에서 구현·검증했다.
 
 ## 구현 검증 기록
 

@@ -225,4 +225,4 @@ broker와 endpoint wiring 제거만 필요하며 DB migration은 없다.
 - 승인 완료: known Heimdall secret은 fail-closed exact redaction하되 application이 출력하는 알 수 없는
   개인정보·credential까지 완전 탐지할 수 없다는 잔여 위험을 단일 관리자 전제에서 수용했다.
 - 후속 후보: live follow는 snapshot 기능의 resource·보안 동작을 확인한 뒤 SSE 또는 WebSocket 중
-  하나를 별도 Plan으로 결정한다.
+  하나를 별도 Plan으로 결정했고, `2026-08-10-service-log-sse.md`에서 SSE로 구현·검증했다.

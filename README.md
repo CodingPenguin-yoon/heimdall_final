@@ -21,6 +21,7 @@ Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 �
 - 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
 - durable cursor 기반 배포 event SSE, 실패 단계와 안정 preview link
 - Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot·SSE와 secret 마스킹
+- 실패 배포의 bounded command·service 진단 artifact와 기본 30일 보존·조회
 - 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
 - 밝은 화이트톤 관리 UI
 
