@@ -114,38 +114,6 @@ class UnavailableCleanupRunner(RecordingRunner):
         return CommandResult(0, "")
 
 
-class RecreatedManagedDatabaseRunner(RecordingRunner):
-    def __init__(self, project_id: str, deployment_id: str, network_name: str) -> None:
-        super().__init__(deployment_id)
-        self.project_id = project_id
-        self.network_name = network_name
-        self.connected = False
-
-    def run(self, arguments, *, timeout_seconds, heartbeat=None, check=True) -> CommandResult:
-        values = list(arguments)
-        self.calls.append((values, check))
-        if values[1:3] == ["network", "inspect"]:
-            return CommandResult(
-                0,
-                json.dumps(
-                    {
-                        "heimdall.managed": "true",
-                        "heimdall.project-id": self.project_id,
-                        "heimdall.deployment-id": self.managed_deployment_id,
-                    }
-                ),
-            )
-        if values[1] == "inspect" and "{{json .NetworkSettings.Networks}}" in values:
-            networks = (
-                {self.network_name: {"Aliases": ["managed-postgres"]}} if self.connected else {}
-            )
-            return CommandResult(0, json.dumps(networks))
-        if values[1:3] == ["network", "connect"]:
-            self.connected = True
-            return CommandResult(0, "")
-        return CommandResult(0, "")
-
-
 class RecordingProbe:
     def __init__(self) -> None:
         self.urls: list[str] = []
@@ -220,9 +188,10 @@ def test_docker_candidate_uses_file_mounts_and_service_scoped_managed_values(
     assert (
         "DATABASE_PASSWORD_FILE=/run/secrets/heimdall/project-database-password" in create_command
     )
+    assert "DATABASE_HOST=managed-db.internal" in create_command
     assert "user-secret-canary" not in command_text
     assert "database-secret-canary" not in command_text
-    assert any(command[1:3] == ["network", "connect"] for command in commands)
+    assert not any(command[1:3] == ["network", "connect"] for command in commands)
     assert candidate.services[0].health_port == 49152
     assert probe.urls == ["http://127.0.0.1:49152/health"]
     assert progress.stages == ["BUILDING", "STARTING", "HEALTH_CHECKING"]
@@ -272,28 +241,6 @@ def test_docker_candidate_uses_configured_host_for_health_probe(tmp_path: Path) 
     )
 
     assert probe.urls == ["http://host.docker.internal:49152/health"]
-
-
-def test_active_database_network_is_restored_after_managed_container_recreation() -> None:
-    item = runtime_deployment()
-    runtime = RuntimeDeployment.from_deployment(item)
-    network_name = f"hm-p{item.project_id.hex[:12]}-g{item.id.hex[:12]}"
-    runner = RecreatedManagedDatabaseRunner(str(item.project_id), str(item.id), network_name)
-
-    restored = DockerRuntime(runner, RecordingProbe()).restore_active_database_network(
-        item, runtime, network_name
-    )
-
-    assert restored is True
-    assert [
-        "docker",
-        "network",
-        "connect",
-        "--alias",
-        "managed-postgres",
-        network_name,
-        "heimdall-managed-postgres",
-    ] in [call[0] for call in runner.calls]
 
 
 def test_candidate_creates_all_containers_and_retries_start_before_port_lookup(
@@ -357,9 +304,8 @@ def test_candidate_cleanup_targets_only_deterministic_deployment_resources(tmp_p
     commands = [call[0] for call in runner.calls]
     mutations = [command for command in commands if "inspect" not in command]
     assert mutations[0][1:3] == ["rm", "--force"]
-    assert mutations[1][1:4] == ["network", "disconnect", "--force"]
-    assert mutations[2][1:3] == ["network", "rm"]
-    assert mutations[3][1:4] == ["image", "rm", "--force"]
+    assert mutations[1][1:3] == ["network", "rm"]
+    assert mutations[2][1:4] == ["image", "rm", "--force"]
     assert all(check is False for _, check in runner.calls)
 
 
@@ -377,7 +323,6 @@ def test_verified_cleanup_removes_only_exact_project_deployment_resources() -> N
     mutations = [command for command, _ in runner.calls if "inspect" not in command]
     assert [command[1:3] for command in mutations] == [
         ["rm", "--force"],
-        ["network", "disconnect"],
         ["network", "rm"],
         ["image", "rm"],
     ]

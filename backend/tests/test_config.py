@@ -15,6 +15,8 @@ def test_runtime_probe_and_broker_socket_defaults_preserve_host_execution(
 
     assert settings.runtime_probe_host == "127.0.0.1"
     assert settings.broker_socket_root == runtime_root.resolve()
+    assert settings.project_database_runtime_host == "host.docker.internal"
+    assert settings.project_database_runtime_port == 55433
 
 
 def test_compose_runtime_probe_and_broker_socket_can_be_configured(

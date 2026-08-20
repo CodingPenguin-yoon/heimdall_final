@@ -3,14 +3,13 @@ name: heimdall-python-local
 x-backend-environment: &backend-environment
   HEIMDALL_DATABASE_URL: postgresql://heimdall:${HEIMDALL_CONTROL_DB_PASSWORD:?required}@control-postgres:5432/heimdall_control
   HEIMDALL_PROJECT_DB_ENABLED: ${HEIMDALL_PROJECT_DB_ENABLED:-true}
-  HEIMDALL_PROJECT_DB_ADMIN_URL: postgresql://heimdall_provisioner:${HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD:?required}@managed-postgres:5432/postgres
-  HEIMDALL_PROJECT_DB_RUNTIME_HOST: ${HEIMDALL_PROJECT_DB_RUNTIME_HOST:-managed-postgres}
-  HEIMDALL_PROJECT_DB_RUNTIME_PORT: ${HEIMDALL_PROJECT_DB_RUNTIME_PORT:-5432}
+  HEIMDALL_PROJECT_DB_ADMIN_URL: postgresql://heimdall_provisioner:${HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD:?required}@${HEIMDALL_MANAGED_DB_HOST:-host.docker.internal}:${HEIMDALL_MANAGED_DB_PORT:-55433}/postgres
+  HEIMDALL_PROJECT_DB_RUNTIME_HOST: ${HEIMDALL_MANAGED_DB_HOST:-host.docker.internal}
+  HEIMDALL_PROJECT_DB_RUNTIME_PORT: ${HEIMDALL_MANAGED_DB_PORT:-55433}
   HEIMDALL_RUNTIME_ROOT: ${HEIMDALL_RUNTIME_ROOT:?required}
   HEIMDALL_BROKER_SOCKET_ROOT: /var/run/heimdall
   HEIMDALL_GIT_WORKSPACE_ROOT: ${HEIMDALL_GIT_WORKSPACE_ROOT:?required}
   HEIMDALL_DOCKER_EXECUTABLE: /usr/local/bin/docker
-  HEIMDALL_MANAGED_DB_CONTAINER: ${HEIMDALL_MANAGED_DB_CONTAINER:-heimdall-managed-postgres}
   HEIMDALL_NGINX_IMAGE: ${HEIMDALL_NGINX_IMAGE:-nginx:1.29-alpine}
   HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS:-900}
   HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS:-60}
@@ -40,27 +39,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  managed-postgres:
-    container_name: heimdall-managed-postgres
-    image: postgres:18.4
-    environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: heimdall_cluster_admin
-      POSTGRES_PASSWORD: ${HEIMDALL_MANAGED_DB_ADMIN_PASSWORD:?required}
-      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-      HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD: ${HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD:?required}
-    ports:
-      - "127.0.0.1:${HEIMDALL_MANAGED_DB_PORT:-55433}:5432"
-    volumes:
-      - managed-postgres:/var/lib/postgresql
-      - ./init-managed-postgres.sh:/docker-entrypoint-initdb.d/001-heimdall-bootstrap.sh:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -q -U heimdall_cluster_admin -d postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-
   api:
     image: heimdall-control-backend:local
     build:
@@ -74,11 +52,10 @@ services:
         source: ${HEIMDALL_RUNTIME_ROOT:?required}
         target: ${HEIMDALL_RUNTIME_ROOT:?required}
       - broker-sockets:/var/run/heimdall
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       control-postgres:
-        condition: service_healthy
-        restart: true
-      managed-postgres:
         condition: service_healthy
         restart: true
     healthcheck:
@@ -117,9 +94,6 @@ services:
       control-postgres:
         condition: service_healthy
         restart: true
-      managed-postgres:
-        condition: service_healthy
-        restart: true
     restart: unless-stopped
 
   frontend:
@@ -141,5 +115,4 @@ services:
 
 volumes:
   control-postgres:
-  managed-postgres:
   broker-sockets:

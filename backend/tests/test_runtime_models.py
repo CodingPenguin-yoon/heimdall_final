@@ -45,7 +45,7 @@ def runtime_deployment() -> Deployment:
             ],
             "routes": [{"path": "/", "service": "api"}],
             "managedDatabase": {
-                "host": "managed-postgres",
+                "host": "managed-db.internal",
                 "port": 5432,
                 "databaseName": "hd_database",
                 "username": "hd_role",

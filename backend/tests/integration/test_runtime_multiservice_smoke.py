@@ -8,8 +8,10 @@ from pathlib import Path
 from urllib.request import urlopen
 from uuid import uuid4
 
+import psycopg
 import pytest
 from conftest import FakeGit
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from heimdall.database import Database
 from heimdall.deployments.models import DeploymentStatus
@@ -35,6 +37,10 @@ from heimdall.secrets.store import FileSecretStore
 
 CONTROL_URL = os.environ.get("HEIMDALL_TEST_CONTROL_DB_URL")
 MANAGED_URL = os.environ.get("HEIMDALL_TEST_MANAGED_DB_ADMIN_URL")
+MANAGED_RUNTIME_HOST = os.environ.get(
+    "HEIMDALL_TEST_MANAGED_DB_RUNTIME_HOST", "host.docker.internal"
+)
+MANAGED_RUNTIME_PORT = int(os.environ.get("HEIMDALL_TEST_MANAGED_DB_RUNTIME_PORT", "55433"))
 DOCKER_SMOKE = os.environ.get("HEIMDALL_RUN_DOCKER_SMOKE") == "true"
 
 pytestmark = pytest.mark.skipif(
@@ -111,15 +117,30 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
                 }
             ),
         )
+        database_repository = PostgresProjectDatabaseRepository(control)
         project_databases = ProjectDatabaseService(
-            PostgresProjectDatabaseRepository(control),
+            database_repository,
             projects,
             secret_store,
             PostgresProjectDatabaseProvisioner(MANAGED_URL),
-            "managed-postgres",
-            5432,
+            MANAGED_RUNTIME_HOST,
+            MANAGED_RUNTIME_PORT,
         )
         assert project_databases.provision(project.id).status == "ACTIVE"
+        database_resource = database_repository.get_for_project(project.id)
+        assert database_resource is not None
+        assert database_resource.credential_reference is not None
+        assert database_resource.credential_fingerprint is not None
+        database_password = secret_store.read(
+            database_resource.credential_reference,
+            database_resource.credential_fingerprint,
+        )
+        project_database_url = _project_url(
+            MANAGED_URL,
+            database_resource.database_name,
+            database_resource.role_name,
+            database_password,
+        )
 
         deployments = PostgresDeploymentRepository(control)
         service = DeploymentService(deployments, projects, project_databases)
@@ -132,9 +153,6 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
         docker = DockerRuntime(
             runner,
             HttpHealthProbe(interval_seconds=0.1),
-            managed_database_container=os.environ.get(
-                "HEIMDALL_TEST_MANAGED_DB_CONTAINER", "heimdall-managed-postgres"
-            ),
             command_timeout_seconds=120,
             health_timeout_seconds=20,
         )
@@ -193,6 +211,53 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
         assert "runtime-user-secret-canary" not in json.dumps(
             [event.message for event in deployments.list_events(deployment.id)]
         )
+
+        assert runtime.active_network_name is not None
+        network_containers = runner.run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "--format",
+                "{{json .Containers}}",
+                runtime.active_network_name,
+            ],
+            timeout_seconds=30,
+        )
+        attached = json.loads(network_containers.stdout)
+        assert all(
+            "heimdall-managed-db" not in container.get("Name", "")
+            for container in attached.values()
+        )
+
+        with psycopg.connect(project_database_url) as connection:
+            connection.execute("CREATE TABLE external_smoke_state (value text NOT NULL)")
+            connection.execute("INSERT INTO external_smoke_state (value) VALUES (%s)", (run_id,))
+
+        service = DeploymentService(deployments, projects, project_databases)
+        worker = DeploymentWorker(
+            deployments,
+            processor,
+            worker_id=f"multi-smoke-restarted-{run_id}",
+            lease_duration=timedelta(seconds=30),
+        )
+        replacement = service.request(
+            project.id,
+            DeploymentCreate.model_validate({"source": {"type": "MAIN_HEAD"}}),
+        )
+        replacement_snapshot = RuntimeDeployment.from_deployment(replacement)
+        assert worker.run_once() is True
+        assert deployments.get(replacement.id).status is DeploymentStatus.SUCCEEDED
+        replacement_runtime = runtimes.get(project.id)
+        assert replacement_runtime is not None
+        assert replacement_runtime.active_deployment_id == replacement.id
+
+        with psycopg.connect(project_database_url) as connection:
+            stored = connection.execute("SELECT value FROM external_smoke_state").fetchall()
+        assert stored == [(run_id,)]
+
+        deployment = replacement
+        runtime_snapshot = replacement_snapshot
     finally:
         if project_id is not None:
             runner.run(
@@ -203,3 +268,16 @@ def test_multiservice_secret_and_database_contract_reaches_preview(tmp_path: Pat
         if deployment is not None and docker is not None and runtime_snapshot is not None:
             docker.cleanup_candidate(deployment, runtime_snapshot)
         control.close()
+
+
+def _project_url(admin_url: str, database: str, user: str, password: str) -> str:
+    values = conninfo_to_dict(admin_url)
+    values.update(
+        {
+            "dbname": database,
+            "user": user,
+            "password": password,
+            "connect_timeout": "3",
+        }
+    )
+    return make_conninfo(**values)
