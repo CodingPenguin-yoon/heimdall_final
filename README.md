@@ -1,152 +1,151 @@
-# Heimdall Python
+# Heimdall
 
-Public GitHub 저장소의 `main` commit을 단일 호스트 Docker preview로 배포하는 관리 도구다.
+Heimdall is a self-hosted deployment manager for public GitHub repositories. It builds the `main` commit as an isolated Docker candidate and promotes it to a stable preview route only after service health and route checks pass.
 
-현재 구현 범위는 다음과 같다.
+> **Current status** · Alpha · Single-host validated · Public GitHub repositories
 
-- Public HTTPS 저장소 등록과 `main` 검증
-- `DRAFT -> READY` 프로젝트 설정
-- multi-service, route, health check 설정
-- service별 plain·secret 환경변수와 PostgreSQL 접근 선언
-- 별도 Managed PostgreSQL의 project database·role 생성
-- owner-only secret file과 non-secret DB 연결정보
-- 최근 `main` commit 조회
-- 최신 또는 특정 commit 배포 요청과 immutable 설정 snapshot
-- PostgreSQL claim token·lease 기반 Worker와 재시작 회수
-- exact SHA checkout과 multi-service Docker candidate
-- plain 환경변수, user secret file, Managed DB password file 주입
-- service health check와 project별 NGINX atomic activation
-- generation 전환 시 동일 Preview 포트의 candidate network 기준 NGINX gateway 재생성·재검증
-- 실패 시 last-known-good preview 보존과 candidate label cleanup
-- 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
-- durable cursor 기반 배포 event SSE, 실패 단계와 안정 preview link
-- Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot·SSE와 secret 마스킹
-- 실패 배포의 bounded command·service 진단 artifact와 기본 30일 보존·조회
-- 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
-- 밝은 화이트톤 관리 UI
+## Why Heimdall
 
-preview port는 초기 범위에서 host의 `127.0.0.1`에만 공개한다. public domain, TLS와 multi-host routing은 아직 포함하지 않는다.
+Deploying a repository manually means coordinating source checkout, image builds, containers, health checks, and NGINX routing. When a step fails, the operator must also determine which version is serving traffic and which new resources are safe to remove.
 
-## 구조
+Heimdall manages that work as one deployment flow.
 
 ```text
-backend/       FastAPI backend
-frontend/      React control UI
-project-docs/  제품·아키텍처·구현 기준
-infra/         로컬 외부 상태
+Register repository
+  -> pin exact commit + immutable configuration snapshot
+  -> build and start an isolated candidate
+  -> verify service health + candidate route
+  -> activate the stable preview route
+  -> record state, events, and logs
 ```
 
-## Local Docker Compose
+The normal deployment path leaves the active preview unchanged until verification completes. If the runtime outcome cannot be established safely, Heimdall preserves the uncertain resources until reconciliation can establish a safe outcome.
 
-기본 로컬 실행은 Docker Desktop을 사용하되 Managed PostgreSQL과 Control Plane의 Compose lifecycle을
-분리한다. 먼저 상위 폴더의 `heimdall-managed-db`를 시작하고, 그다음 이 저장소에서 Control PostgreSQL,
-FastAPI API, deployment Worker와 production frontend를 시작한다.
+## Core Capabilities
+
+- Inspect the latest `main` commit of a public GitHub repository and deploy an exact SHA
+- Build multi-service Docker applications with internal DNS and path-based routes
+- Run per-service health checks before switching the project NGINX gateway
+- Provide plain and secret environment variables and provision per-project databases and roles on external PostgreSQL
+- Process durable deployment jobs through PostgreSQL claim tokens and leases
+- Stream structured deployment events and bounded service logs
+- Retain size-limited, redacted command and service diagnostics after failures
+- Preserve uncertain runtime resources until reconciliation confirms a safe outcome
+
+## Quick Start
+
+Heimdall requires Docker Desktop or Docker Engine with Compose v2. Its control-plane Compose owns Control PostgreSQL, the API, the Worker, and the frontend. Application data lives in a separate PostgreSQL service reached over TCP.
 
 ```bash
-cd ../heimdall-managed-db
-cp .env.example .env
-# .env의 admin/provisioner password를 설정한다.
-docker compose --env-file .env up -d --wait
+git clone https://github.com/CodingPenguin-yoon/heimdall_final.git
+cd heimdall_final
 
-cd ../heimdall-python
 cp .env.example .env
-# Control DB password, 같은 provisioner password, runtime과 Git 절대 경로를 설정한다.
+mkdir -p .heimdall-local/runtime .heimdall-local/git
+```
+
+Set the following values in `.env`:
+
+- `HEIMDALL_CONTROL_DB_PASSWORD`
+- `HEIMDALL_MANAGED_DB_PROVISIONER_PASSWORD`
+- `HEIMDALL_MANAGED_DB_HOST` and `HEIMDALL_MANAGED_DB_PORT`
+- `HEIMDALL_RUNTIME_ROOT`: the absolute host path to `.heimdall-local/runtime`
+- `HEIMDALL_GIT_WORKSPACE_ROOT`: the absolute host path to `.heimdall-local/git`
+
+For the full database-provisioning flow, start the separate Managed PostgreSQL service first and use the same provisioner password and reachable host/port in Heimdall. To run only the deployment control plane, set `HEIMDALL_PROJECT_DB_ENABLED=false`; Compose interpolation still requires a non-empty placeholder provisioner password.
+
+```bash
 docker compose --env-file .env -f infra/dev/compose.yaml up -d --build --wait
 docker compose --env-file .env -f infra/dev/compose.yaml ps
 ```
 
-- UI: `http://127.0.0.1:5173`
-- API health: `http://127.0.0.1:8000/api/health`
-- API·Worker·frontend와 Control DB 로그:
-  `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`
-- Managed DB 로그:
-  `docker compose --env-file ../heimdall-managed-db/.env -f ../heimdall-managed-db/compose.yaml logs --follow`
+- UI: <http://127.0.0.1:5173>
+- API health: <http://127.0.0.1:8000/api/health>
+- Logs: `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`
 
-Control Plane Compose project 이름은 `heimdall-python-local`, Managed DB project 이름은
-`heimdall-managed-db`로 고정한다. 두 project는 Docker network를 공유하지 않고 TCP endpoint로만
-통신한다. `HEIMDALL_RUNTIME_ROOT`와 `HEIMDALL_GIT_WORKSPACE_ROOT`는 host와 Worker
-container에서 같은 절대 경로로 bind해 Worker가 host Docker daemon에 넘기는 build·secret·NGINX
-mount source를 유지한다. service-log Unix socket은 별도 `broker-sockets` volume에서 API와 Worker만
-공유한다.
+Register a public GitHub repository in the UI, configure its services and routes, and request a deployment once the project reaches `READY`. Preview ports are currently published only on `127.0.0.1`. The external Managed PostgreSQL lifecycle is intentionally independent from the control plane.
 
-Docker socket은 Worker에만 mount한다. API와 frontend에는 전달하지 않는다. Worker는 Docker
-Desktop의 `host.docker.internal`로 loopback publish된 candidate health와 stable preview를 검증한다.
-API와 DB 접근 project container도 기본적으로 `host.docker.internal:55433`의 외부 Managed DB에
-연결한다. 운영에서는 같은 설정을 Managed DB VM의 private DNS와 `5432`로 바꾼다.
+## Architecture
 
-개발 데이터를 유지하려면 `docker compose down -v`를 실행하지 않는다. Compose 실행 중에는 아래
-host API·Worker·Vite 명령을 같은 포트에서 동시에 실행하지 않는다.
+```text
+Browser -> NGINX / React UI -> FastAPI API -> Control PostgreSQL
+                                  |               |
+                                  |               +-> deployment jobs / state / history
+                                  |
+                                  +-> external/private TCP -> Managed PostgreSQL
+                                                              project databases / roles
 
-### 운영 중지와 재시작
+Project container -> external/private TCP -> Managed PostgreSQL
 
-잠시 중지할 때는 container와 network를 삭제하는 `down` 대신 `stop`을 사용한다.
-
-```bash
-# Control Plane만 중지한다. Managed DB와 배포된 project는 계속 실행된다.
-docker compose --env-file .env -f infra/dev/compose.yaml stop
-
-# Control Plane을 다시 시작하고 health를 기다린다.
-docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
-
-# Managed DB는 별도 lifecycle로 중지하거나 다시 시작한다.
-docker compose --env-file ../heimdall-managed-db/.env \
-  -f ../heimdall-managed-db/compose.yaml stop
-docker compose --env-file ../heimdall-managed-db/.env \
-  -f ../heimdall-managed-db/compose.yaml up -d --wait
+Python Worker -> PostgreSQL claim / lease
+              -> Git exact checkout
+              -> Docker candidate
+              -> health + route probes
+              -> project NGINX activation
 ```
 
-각 Compose의 `down`은 자기 container와 network만 삭제하며 `-v`가 없으면 자기 PostgreSQL named
-volume을 보존한다. Control Plane의 `down -v`는 Control DB만, Managed DB project의 `down -v`는
-project application data만 삭제한다. 개발 데이터를 의도적으로 초기화할 때만 사용한다.
+The API and Worker use the same Python package but run as separate processes. Only the Worker receives the Docker socket; the API and frontend do not. The API requests service logs from the Worker through owner-only Unix sockets instead of accessing Docker directly.
 
-### 장애 영향
+The API provisions databases and roles through an external/private TCP endpoint. Database-enabled project containers use that same endpoint; Heimdall does not attach Managed PostgreSQL to deployment networks or manage its Docker lifecycle.
 
-| 중단 대상 | 기존 배포 project | 관리 기능 |
-| --- | --- | --- |
-| frontend | Preview에는 영향 없음 | 관리 UI만 사용할 수 없음 |
-| API | Preview에는 영향 없음 | API와 관리 UI를 사용할 수 없음 |
-| Worker | 실행 중 service와 gateway는 유지 | 새 배포, reconciliation과 service log broker가 멈춤 |
-| Control PostgreSQL | 실행 중 project는 Managed DB가 살아 있으면 유지 | API와 Worker가 상태를 읽거나 갱신할 수 없음 |
-| Managed PostgreSQL | DB 미사용 project는 유지 | DB 사용 project의 application 요청이 실패 |
-| Docker daemon | project service, gateway와 local Compose container가 함께 영향받음 | Docker 복구 뒤 기존 container의 restart policy에 따라 재시작 |
+Each deployment stores its commit and service, route, and environment configuration as an immutable snapshot. Changes to project settings do not affect a deployment that has already started.
 
-성공한 project service와 project별 NGINX gateway는 Control Plane과 별도 container이며
-`unless-stopped` restart policy를 가진다. 따라서 API나 Worker process만 종료돼도 기존 Preview는
-계속 동작한다. Managed PostgreSQL도 별도 Compose/VM lifecycle이므로 Control Plane을 중지하거나
-재배포해도 application data path는 유지된다.
+See [Architecture](project-docs/architecture.md) for component responsibilities and runtime contracts.
 
-## Host Backend 개발 (선택)
+## Failure Handling
+
+| Scenario                                   | Response                                                                      |
+| ------------------------------------------ | ----------------------------------------------------------------------------- |
+| Build, start, or health check fails        | Keep the active metadata unchanged and clean up the failed candidate          |
+| NGINX config, reload, or route probe fails | Attempt last-known-good recovery and clean up only after recovery is verified |
+| Worker stops during activation             | Compare database state, the NGINX marker, and Docker labels before resuming   |
+| Runtime state cannot be determined safely  | Preserve it as `RECOVERY_STATE_UNCERTAIN` until reconciliation is conclusive  |
+
+These are the intended recovery paths. Remaining crash and rollback hardening gaps are tracked in the [runtime and settings hardening plan](project-docs/plans/2026-08-17-runtime-and-settings-hardening.md).
+
+Failure diagnostics are limited to 256 KiB per artifact and the latest 200 lines per service, with a default retention period of 30 days. If known secrets cannot be redacted safely, Heimdall records the collection failure instead of the raw output.
+
+Relevant coverage is available in the [NGINX gateway tests](backend/tests/test_nginx_gateway.py) and [runtime integration tests](backend/tests/integration/test_worker_runtime_smoke.py).
+
+## Current Scope
+
+| Included                                              | Not included yet                              |
+| ----------------------------------------------------- | --------------------------------------------- |
+| Public HTTPS GitHub repositories                      | Private Git, SSH keys, GitLab                 |
+| Fixed `main` branch and exact commit rebuilds         | Arbitrary branches, tags, or SHAs             |
+| Multi-service Dockerfile builds                       | Direct Compose file execution                 |
+| Path-based routes and a stable local preview port     | Public domains, TLS, multi-host routing       |
+| Manual deployments                                    | Webhooks and automatic deployments            |
+| Database and role provisioning on external PostgreSQL | Backup, restore, and purge automation         |
+| Bounded events, logs, and diagnostics                 | Unlimited or long-term log storage and search |
+| One trusted administrator                             | Multiple users and roles                      |
+
+The canonical boundaries are documented in [Product Scope](project-docs/product-scope.md), and the operational contracts are documented in [Project Profile](project-docs/project-profile.md).
+
+## Roadmap
+
+The current Alpha is the self-hosted edition for a single Docker host. After its installation flow and trust boundary are ready for a first release, the planned SaaS edition will build and run user previews on Heimdall-operated infrastructure.
+
+The SaaS edition is a future delivery model and is not part of the currently supported scope.
+
+## Development
+
+### Backend
+
+Python `3.13` or `3.14` is required.
 
 ```bash
 cd backend
-set -a
-source ../.env
-set +a
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff format --check .
 .venv/bin/pytest
 .venv/bin/ruff check .
-.venv/bin/uvicorn heimdall.main:app --reload
 ```
 
-API와 별도 terminal에서 Worker를 실행한다.
+### Frontend
 
-```bash
-cd backend
-.venv/bin/heimdall-worker
-# 또는 .venv/bin/python -m heimdall.worker
-```
-
-Worker만 Docker socket을 사용한다. API process와 배포 project container에는 Docker socket을 전달하지 않는다.
-서비스 로그 조회도 API가 Docker를 직접 호출하지 않고 같은 `HEIMDALL_RUNTIME_ROOT`의 owner-only
-`logs.sock`과 `log-stream.sock`을 통해 Worker에 요청한다. API와 Worker를 함께 실행해야 하며
-Worker가 없으면 로그 조회만 stable `503`으로 실패하고 배포 처리 상태는 바뀌지 않는다. snapshot과
-live stream은 각각 최대 4개 처리 슬롯을 사용해 장시간 SSE 연결이 수동 조회를 막지 않는다.
-구조화 deployment event SSE도 최대 4개의 PostgreSQL LISTEN 연결만 사용해 API pool 8개 중 일반
-요청용 연결을 남긴다.
-
-## Host Frontend 개발 (선택)
+Node.js `24+` and pnpm `11.13+` are required.
 
 ```bash
 cd frontend
@@ -154,19 +153,12 @@ pnpm install
 pnpm verify
 pnpm exec playwright install chromium
 pnpm e2e
-pnpm dev
 ```
 
-`pnpm e2e`는 local Vite server와 mock API를 사용해 관리자 runtime 복구 화면을 실제
-Chromium에서 검증한다.
+<details>
+<summary>PostgreSQL, Docker, and NGINX integration smoke tests</summary>
 
-## PostgreSQL data와 release smoke
-
-Control Plane과 Managed DB Compose는 각자의 PostgreSQL volume을 소유한다. 두 `.env`의 provisioner
-password와 `HEIMDALL_PROJECT_DB_ADMIN_URL` password는 같은 값이어야 한다.
-
-실제 PostgreSQL·Docker·NGINX release smoke는 명시적으로 opt-in한다. 아래 URL의 password는
-로컬 `.env`에 설정한 test 전용 값과 맞춰야 한다.
+Start the separate Managed PostgreSQL service and the Heimdall control-plane Compose, then opt in explicitly with test-only database URLs and a public test repository.
 
 ```bash
 cd backend
@@ -179,104 +171,22 @@ export HEIMDALL_RUN_DOCKER_SMOKE='true'
 .venv/bin/pytest tests/integration
 ```
 
-Mac 로컬 테스트의 checkout, generated NGINX config와 secret file은 저장소의
-`.heimdall-local/git`, `.heimdall-local/runtime` 아래에 모은다. 이 디렉터리는 전체가
-Git에서 제외되며 PostgreSQL data는 각 Compose의 named volume이 소유한다.
+</details>
 
-## Application database contract
+## Operations Notes
 
-프로젝트 코드는 DB 접근 service에서 다음 값을 읽어야 한다.
+- Use `docker compose ... stop` for temporary shutdowns that should preserve containers and networks.
+- The control-plane Compose and Managed PostgreSQL have independent lifecycles and volumes.
+- Running `down -v` against the control plane deletes Control PostgreSQL and broker volumes; running it against the Managed PostgreSQL stack deletes project application data. Use either only for an intentional reset.
+- Successful project services and NGINX gateways continue running if only the API or Worker stops. A stopped Worker pauses new deployments, reconciliation, and service-log brokering. Database-enabled projects are still affected when Managed PostgreSQL is unavailable.
 
-```text
-DATABASE_HOST
-DATABASE_PORT
-DATABASE_NAME
-DATABASE_USER
-DATABASE_SCHEMA
-DATABASE_PASSWORD_FILE
-```
-
-비밀번호는 `DATABASE_PASSWORD_FILE`이 가리키는 read-only file에서 읽는다. application schema와 table migration은 Alembic, Django migration 등 프로젝트 코드가 소유한다.
-
-사용자가 `SECRET` kind로 `JWT_SECRET`을 설정하면 raw 값 대신 다음 file path가 환경변수에 전달된다.
+## Repository Layout
 
 ```text
-JWT_SECRET=/run/secrets/heimdall/environment/jwt_secret
+backend/       FastAPI API, deployment Worker, runtime adapters
+frontend/      React control UI
+infra/         local Control Plane Compose
+project-docs/  product scope, architecture, implementation plans
 ```
 
-프로젝트 코드는 해당 path의 read-only file을 읽는다. raw secret은 Control DB, deployment snapshot, API, event와 Docker environment에 저장하지 않는다.
-
-## Runtime flow
-
-```text
-QUEUED
--> PREPARING: PostgreSQL job claim과 exact SHA checkout
--> BUILDING: service image build
--> STARTING: generation network와 candidate container
--> HEALTH_CHECKING: loopback service probe
--> ACTIVATING: nginx -t, atomic config replace, reload, route probe
--> SUCCEEDED
-```
-
-build, start, health 또는 activation이 실패하면 기존 Preview 연결을 먼저 복구하고, 실패 command 출력과
-존재하는 service의 최근 로그를 저장한 뒤 실패한 새 resource만 정리한다. 진단 저장 자체가 실패해도
-cleanup과 `FAILED` 수렴은 계속한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한
-resource만 대상으로 한다.
-
-`GET /api/deployments/{deploymentId}/events`는 저장된 구조화 event snapshot을 반환한다.
-active deployment의 UI는 마지막 event ID를
-`GET /api/deployments/{deploymentId}/events/stream?after={eventId}`에 넘겨 이후 event를 SSE로
-이어 받는다. insert transaction은 deployment UUID와 event ID만 PostgreSQL `NOTIFY`로 보내며 실제
-event는 항상 Control DB에서 cursor 조회한다. 브라우저 재연결의 `Last-Event-ID`도 함께 반영하므로
-notification이 유실되거나 연결이 잠시 끊겨도 저장된 event부터 복구한다. 배포가 terminal이면 남은
-event를 보낸 뒤 stream을 닫는다.
-
-`GET /api/deployments/{deploymentId}/service-logs?service={serviceName}`은 immutable snapshot의
-service만 선택하고 deterministic container 이름과 managed·project·deployment label을 모두 확인한
-뒤 최근 200줄을 조회한다. stdout과 stderr는 Docker timestamp 순으로 반환하고, Heimdall이 관리하는
-project secret과 database password는 Worker에서 `[REDACTED]`로 바뀐 뒤에만 socket을 통과한다.
-redaction 값을 준비하지 못하면 원문을 반환하지 않으며, 응답은 메모리에서만 처리하고 저장하지 않는다.
-line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
-`503 SERVICE_LOG_REDACTION_UNAVAILABLE`로 fail closed 한다.
-
-`GET /api/deployments/{deploymentId}/diagnostics`는 실패 event와 연결된 command/service artifact
-metadata를 반환하고, `GET /api/deployments/{deploymentId}/diagnostics/{artifactId}`는 선택한 bounded
-line payload만 반환한다. artifact당 최대 256KiB, service당 최근 200줄이며 기본 30일
-(`HEIMDALL_DIAGNOSTIC_RETENTION_DAYS`) 보존한다. 알려진 secret을 안전하게 가릴 수 없거나 container
-로그를 읽지 못하면 원문 대신 수집 실패 이유만 저장한다. 배포 상세 화면은 실패한 배포의 `서비스
-로그` 영역을 보존 모드로 전환하며, 이곳에서 event별 command/service artifact를 선택할 수 있다.
-
-`GET /api/deployments/{deploymentId}/service-logs/stream?service={serviceName}`은 같은 검증·redaction
-경계를 사용해 최근 200줄부터 `docker logs --follow`의 새 출력을 SSE로 전달한다. 브라우저가
-끊어지면 자동 재연결하며 새 session의 tail 200으로 화면 buffer를 교체한다. service 전환, HTTP
-disconnect, Worker 종료와 container log 종료 시 해당 Docker follow process를 정리한다. line은
-16KiB, 화면 buffer는 200줄로 제한하고 raw·redacted log 모두 저장하지 않는다. 기존 `새로고침`은
-snapshot fallback으로 유지한다. 자동 스크롤 일시정지는 SSE 수집을 끊지 않으며 새 line 수를
-표시하고, `최신 로그` 버튼으로 마지막 line 이동과 자동 추적을 함께 재개한다.
-
-다음 배포에서 Worker는 managed·project·gateway label과 실제 running 상태를 함께 확인한다. 실행
-중 gateway는 candidate route를 먼저 검증하고 candidate network를 주 네트워크로 동일 Preview
-포트에 다시 생성해 host route를 재검증한다. exact managed gateway가 정지 상태면 그 전에 기존
-active network의 last-known-good 상태로 먼저 복원한다. 이 확인이 끝난 뒤에만 DB active 전환과
-이전 generation 회수를 수행하며, 실행 중 gateway와 label이 다른 동명 container는 자동 교체하지
-않는다.
-
-Worker가 activation 도중 종료돼 lease가 만료되면 새 Worker는 DB 기록만 믿고 candidate를
-삭제하지 않는다. Control DB의 active deployment, NGINX가 응답하는 deployment ID와 Docker
-label을 비교한다. 실제 target이 정상 서비스 중이면 남은 성공 기록만 완료하고, 이전
-generation이 서비스 중임을 확인한 뒤에만 candidate를 다시 만든다. 상태를 확정할 수 없으면
-candidate를 보존하며, 반복 crash는 `HEIMDALL_WORKER_MAX_ATTEMPTS` 상한 뒤 안정적인 recovery
-failure로 종료한다.
-
-## Preserved runtime reconciliation
-
-`RECOVERY_STATE_UNCERTAIN`으로 끝난 deployment의 Docker resource는 즉시 삭제하지 않는다.
-기본 72시간(`HEIMDALL_RUNTIME_RETENTION_HOURS`) 동안 보존한 뒤 Worker가 DB, NGINX marker와
-exact Docker label을 다시 확인한다. target이 실제 active면 deployment를 성공으로 수렴시키고,
-이전 generation이 안전하게 응답하면 target candidate만 정리한다. 여전히 불확실하면
-`BLOCKED`로 남기며 자동 삭제하지 않는다.
-
-관리 UI에서 보존 기간 전에도 안전 재확인을 요청할 수 있다. 강제 정리는 전체 Deployment ID를
-확인값으로 입력해야 하며, Control DB가 active로 기록한 generation과 label이 일치하지 않는
-resource는 삭제하지 않는다. API는 요청을 DB에만 기록하고 실제 Docker 작업은 lease를 획득한
-Worker가 수행한다.
+The external Managed PostgreSQL stack is intentionally not owned by this repository. Public hostname routing and TLS are documented as future design work, not current capabilities.
