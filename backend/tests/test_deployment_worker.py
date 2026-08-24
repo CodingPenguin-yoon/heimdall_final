@@ -183,6 +183,7 @@ def worker(
     processor,
     *,
     diagnostics: bool = False,
+    on_runtime_ready=None,
 ) -> DeploymentWorker:
     return DeploymentWorker(
         repository,
@@ -191,19 +192,22 @@ def worker(
         lease_duration=timedelta(minutes=1),
         retry_base_delay=timedelta(seconds=1),
         diagnostic_retention=timedelta(days=30) if diagnostics else None,
+        on_runtime_ready=on_runtime_ready,
     )
 
 
 def test_worker_advances_stages_and_completes_the_claim() -> None:
     repository = MemoryJobRepository(deployment())
     processor = SuccessfulProcessor()
+    woken_projects = []
 
-    assert worker(repository, processor).run_once() is True
+    assert worker(repository, processor, on_runtime_ready=woken_projects.append).run_once() is True
 
     assert repository.transitions == [DeploymentStatus.BUILDING, DeploymentStatus.STARTING]
     assert repository.renewals == 3
     assert repository.completed == "SUCCEEDED"
     assert processor.cleaned is False
+    assert woken_projects == [repository.item.project_id]
 
 
 def test_retryable_failure_is_scheduled_with_bounded_attempts() -> None:
@@ -220,12 +224,26 @@ def test_retryable_failure_is_scheduled_with_bounded_attempts() -> None:
 def test_recovered_active_deployment_completes_without_rebuilding() -> None:
     repository = MemoryJobRepository(deployment(), attempts=2)
     processor = SuccessfulProcessor(RecoveryDisposition.ACTIVE)
+    woken_projects = []
 
-    worker(repository, processor).run_once()
+    worker(repository, processor, on_runtime_ready=woken_projects.append).run_once()
 
     assert repository.completed == "SUCCEEDED"
     assert processor.processed is False
     assert processor.cleaned is False
+    assert woken_projects == [repository.item.project_id]
+
+
+def test_runtime_wake_failure_does_not_fail_a_successful_deployment() -> None:
+    repository = MemoryJobRepository(deployment())
+    processor = SuccessfulProcessor()
+
+    def fail_to_wake(project_id) -> None:
+        raise RuntimeError(f"could not wake {project_id}")
+
+    worker(repository, processor, on_runtime_ready=fail_to_wake).run_once()
+
+    assert repository.completed == "SUCCEEDED"
 
 
 def test_uncertain_recovery_retries_without_deleting_candidate() -> None:
@@ -264,11 +282,13 @@ def test_expired_claim_over_max_attempts_is_not_executed_again() -> None:
 def test_non_retryable_failure_is_terminal_and_candidate_is_cleaned() -> None:
     repository = MemoryJobRepository(deployment())
     processor = FailingProcessor(RuntimeFailure("BUILD", "IMAGE_BUILD_FAILED"))
+    woken_projects = []
 
-    worker(repository, processor).run_once()
+    worker(repository, processor, on_runtime_ready=woken_projects.append).run_once()
 
     assert processor.cleaned is True
     assert repository.completed == "FAILED:BUILD:IMAGE_BUILD_FAILED"
+    assert woken_projects == []
 
 
 def test_diagnostics_are_recorded_after_rollback_and_before_cleanup() -> None:

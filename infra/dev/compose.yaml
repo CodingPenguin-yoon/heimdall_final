@@ -20,6 +20,19 @@ x-backend-environment: &backend-environment
   HEIMDALL_WORKER_MAX_ATTEMPTS: ${HEIMDALL_WORKER_MAX_ATTEMPTS:-3}
   HEIMDALL_RUNTIME_RETENTION_HOURS: ${HEIMDALL_RUNTIME_RETENTION_HOURS:-72}
   HEIMDALL_DIAGNOSTIC_RETENTION_DAYS: ${HEIMDALL_DIAGNOSTIC_RETENTION_DAYS:-30}
+  HEIMDALL_MANAGEMENT_HOSTNAME: ${HEIMDALL_MANAGEMENT_HOSTNAME:?required}
+  HEIMDALL_DEPLOYMENT_BASE_DOMAIN: ${HEIMDALL_DEPLOYMENT_BASE_DOMAIN:?required}
+  HEIMDALL_RESERVED_PUBLIC_SUBDOMAINS: ${HEIMDALL_RESERVED_PUBLIC_SUBDOMAINS:-}
+  HEIMDALL_EDGE_CONFIG_ROOT: ${HEIMDALL_EDGE_CONFIG_ROOT:?required}
+  HEIMDALL_EDGE_NETWORK_NAME: ${HEIMDALL_EDGE_NETWORK_NAME:-heimdall-edge}
+  HEIMDALL_EDGE_CONTAINER_NAME: ${HEIMDALL_EDGE_CONTAINER_NAME:-heimdall-edge-gateway}
+  HEIMDALL_EDGE_NGINX_IMAGE: ${HEIMDALL_EDGE_NGINX_IMAGE:-nginx:1.29-alpine}
+  HEIMDALL_EDGE_HTTP_PORT: ${HEIMDALL_EDGE_HTTP_PORT:-8088}
+  HEIMDALL_ROUTING_WORKER_LEASE_SECONDS: ${HEIMDALL_ROUTING_WORKER_LEASE_SECONDS:-60}
+  HEIMDALL_ROUTING_WORKER_POLL_SECONDS: ${HEIMDALL_ROUTING_WORKER_POLL_SECONDS:-1}
+  HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS: ${HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS:-3}
+  HEIMDALL_ROUTING_WORKER_RETRY_SECONDS: ${HEIMDALL_ROUTING_WORKER_RETRY_SECONDS:-5}
+  HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS: ${HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS:-60}
 
 services:
   control-postgres:
@@ -45,12 +58,18 @@ services:
       context: ../../backend
     environment:
       <<: *backend-environment
+      HEIMDALL_AUTH_SECRET_ROOT: /run/secrets/heimdall/auth
+      HEIMDALL_AUTH_SECRET_SOURCE_ROOT: ${HEIMDALL_AUTH_SECRET_ROOT:?required}
     ports:
       - "127.0.0.1:${HEIMDALL_API_PORT:-8000}:8000"
     volumes:
       - type: bind
         source: ${HEIMDALL_RUNTIME_ROOT:?required}
         target: ${HEIMDALL_RUNTIME_ROOT:?required}
+      - type: bind
+        source: ${HEIMDALL_AUTH_SECRET_ROOT:?required}
+        target: /run/secrets/heimdall/auth
+        read_only: true
       - broker-sockets:/var/run/heimdall
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -96,6 +115,42 @@ services:
         restart: true
     restart: unless-stopped
 
+  routing-worker:
+    image: heimdall-control-backend:local
+    build:
+      context: ../../backend
+    command: ["heimdall-routing-worker"]
+    environment:
+      HEIMDALL_DATABASE_URL: postgresql://heimdall:${HEIMDALL_CONTROL_DB_PASSWORD:?required}@control-postgres:5432/heimdall_control
+      HEIMDALL_DOCKER_EXECUTABLE: /usr/local/bin/docker
+      HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_COMMAND_TIMEOUT_SECONDS:-900}
+      HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS: ${HEIMDALL_RUNTIME_HEALTH_TIMEOUT_SECONDS:-60}
+      HEIMDALL_MANAGEMENT_HOSTNAME: ${HEIMDALL_MANAGEMENT_HOSTNAME:?required}
+      HEIMDALL_DEPLOYMENT_BASE_DOMAIN: ${HEIMDALL_DEPLOYMENT_BASE_DOMAIN:?required}
+      HEIMDALL_EDGE_CONFIG_ROOT: ${HEIMDALL_EDGE_CONFIG_ROOT:?required}
+      HEIMDALL_EDGE_NETWORK_NAME: ${HEIMDALL_EDGE_NETWORK_NAME:-heimdall-edge}
+      HEIMDALL_EDGE_CONTAINER_NAME: ${HEIMDALL_EDGE_CONTAINER_NAME:-heimdall-edge-gateway}
+      HEIMDALL_EDGE_NGINX_IMAGE: ${HEIMDALL_EDGE_NGINX_IMAGE:-nginx:1.29-alpine}
+      HEIMDALL_EDGE_PROBE_HOST: host.docker.internal
+      HEIMDALL_EDGE_HTTP_PORT: ${HEIMDALL_EDGE_HTTP_PORT:-8088}
+      HEIMDALL_ROUTING_WORKER_LEASE_SECONDS: ${HEIMDALL_ROUTING_WORKER_LEASE_SECONDS:-60}
+      HEIMDALL_ROUTING_WORKER_POLL_SECONDS: ${HEIMDALL_ROUTING_WORKER_POLL_SECONDS:-1}
+      HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS: ${HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS:-3}
+      HEIMDALL_ROUTING_WORKER_RETRY_SECONDS: ${HEIMDALL_ROUTING_WORKER_RETRY_SECONDS:-5}
+      HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS: ${HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS:-60}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ${HEIMDALL_EDGE_CONFIG_ROOT:?required}
+        target: ${HEIMDALL_EDGE_CONFIG_ROOT:?required}
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      control-postgres:
+        condition: service_healthy
+        restart: true
+    restart: unless-stopped
+
   frontend:
     image: heimdall-control-frontend:local
     build:
@@ -111,8 +166,19 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    networks:
+      default:
+      edge:
+        aliases:
+          - heimdall-control-frontend
     restart: unless-stopped
 
 volumes:
   control-postgres:
   broker-sockets:
+
+networks:
+  default:
+  edge:
+    name: ${HEIMDALL_EDGE_NETWORK_NAME:-heimdall-edge}
+    external: true

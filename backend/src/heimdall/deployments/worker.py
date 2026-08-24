@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
 
 from heimdall.deployments.diagnostics import DiagnosticArtifactDraft, FailedCommandOutput
 from heimdall.deployments.models import (
@@ -80,6 +82,7 @@ class DeploymentWorker:
         max_attempts: int = 3,
         retry_base_delay: timedelta = timedelta(seconds=5),
         diagnostic_retention: timedelta | None = None,
+        on_runtime_ready: Callable[[UUID], None] | None = None,
     ) -> None:
         if not worker_id or len(worker_id) > 128:
             raise ValueError("worker_id must be between 1 and 128 characters")
@@ -96,6 +99,7 @@ class DeploymentWorker:
         self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
         self._diagnostic_retention = diagnostic_retention
+        self._on_runtime_ready = on_runtime_ready
 
     def run_once(self) -> bool:
         claim = self._repository.claim_next(self._worker_id, self._lease_duration)
@@ -110,7 +114,7 @@ class DeploymentWorker:
                 recovery = self._processor.recover(claim.deployment, progress)
                 if recovery is RecoveryDisposition.ACTIVE:
                     progress.heartbeat()
-                    self._repository.succeed(claim)
+                    self._succeed(claim)
                     return True
                 if recovery is RecoveryDisposition.UNCERTAIN:
                     self._handle_failure(
@@ -131,7 +135,7 @@ class DeploymentWorker:
                     return True
             self._processor.process(claim.deployment, progress)
             progress.heartbeat()
-            self._repository.succeed(claim)
+            self._succeed(claim)
         except DeploymentClaimLostError:
             return True
         except RuntimeFailure as failure:
@@ -142,6 +146,12 @@ class DeploymentWorker:
                 RuntimeFailure("RUNTIME", "UNEXPECTED_RUNTIME_FAILURE", retryable=False),
             )
         return True
+
+    def _succeed(self, claim: DeploymentJobClaim) -> None:
+        deployment = self._repository.succeed(claim)
+        if self._on_runtime_ready is not None:
+            with suppress(Exception):
+                self._on_runtime_ready(deployment.project_id)
 
     def _handle_failure(self, claim: DeploymentJobClaim, failure: RuntimeFailure) -> None:
         if failure.cleanup_candidate:

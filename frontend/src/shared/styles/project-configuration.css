@@ -179,6 +179,143 @@
   white-space: normal;
 }
 
+.public-route-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.public-route-state {
+  display: inline-flex;
+  width: max-content;
+  padding: 0.32rem 0.55rem;
+  color: #58677a;
+  border-radius: 999px;
+  background: #eef2f7;
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.public-route-pending,
+.public-route-uncertain {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.public-route-applying {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.public-route-active {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.public-route-failed {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.public-route-address {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  background: var(--blue-soft);
+}
+
+.public-route-address > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.public-route-address strong {
+  font-size: 0.74rem;
+}
+
+.public-route-address span,
+.public-route-empty,
+.public-route-loading {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.7rem;
+}
+
+.public-route-address a,
+.public-route-address code {
+  min-width: 0;
+  overflow: hidden;
+  color: #1e4f9b;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-route-address a {
+  text-decoration: underline;
+}
+
+.public-route-metadata {
+  display: grid;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.public-route-metadata > div {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.65rem 0.75rem;
+  border-right: 1px solid var(--border);
+}
+
+.public-route-metadata > div:nth-child(2n),
+.public-route-metadata .public-route-error-code {
+  border-right: 0;
+}
+
+.public-route-metadata .public-route-error-code {
+  border-top: 1px solid var(--border);
+  grid-column: 1 / -1;
+}
+
+.public-route-metadata dt {
+  color: var(--text-faint);
+  font-size: 0.62rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.public-route-metadata dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.public-route-error-code dd {
+  color: var(--red);
+}
+
+.public-route-form {
+  display: grid;
+  align-items: end;
+  gap: 0.8rem;
+  grid-template-columns: minmax(180px, 1fr) auto;
+}
+
+.public-route-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 @media (max-width: 720px) {
   .reconciliation-actions {
     grid-template-columns: 1fr;
@@ -200,5 +337,15 @@
   .database-empty {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .public-route-address,
+  .public-route-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .public-route-form {
+    grid-template-columns: 1fr;
   }
 }

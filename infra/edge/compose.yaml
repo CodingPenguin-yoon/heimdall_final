@@ -1,0 +1,40 @@
+name: heimdall-python-edge
+
+services:
+  edge-gateway:
+    image: ${HEIMDALL_EDGE_NGINX_IMAGE:-nginx:1.29-alpine}
+    container_name: ${HEIMDALL_EDGE_CONTAINER_NAME:-heimdall-edge-gateway}
+    environment:
+      HEIMDALL_MANAGEMENT_HOSTNAME: ${HEIMDALL_MANAGEMENT_HOSTNAME:?required}
+      NGINX_ENVSUBST_OUTPUT_DIR: /tmp/heimdall-edge-conf
+    ports:
+      - "${HEIMDALL_EDGE_HTTP_BIND_ADDRESS:-127.0.0.1}:${HEIMDALL_EDGE_HTTP_PORT:-8088}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./management.conf.template:/etc/nginx/templates/management.conf.template:ro
+      - type: bind
+        source: ${HEIMDALL_EDGE_CONFIG_ROOT:?required}
+        target: /etc/nginx/routes
+        read_only: true
+    tmpfs:
+      - /tmp/heimdall-edge-conf:mode=0755
+    networks:
+      edge:
+    labels:
+      heimdall.managed: "true"
+      heimdall.kind: edge-gateway
+      heimdall.test-id: ${HEIMDALL_EDGE_TEST_ID:-}
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+networks:
+  edge:
+    name: ${HEIMDALL_EDGE_NETWORK_NAME:-heimdall-edge}
+    labels:
+      heimdall.managed: "true"
+      heimdall.kind: edge-network
+      heimdall.test-id: ${HEIMDALL_EDGE_TEST_ID:-}

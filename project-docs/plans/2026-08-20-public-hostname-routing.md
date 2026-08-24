@@ -31,7 +31,7 @@ Edge Gateway는 실제 request data path이고 Routing Worker는 config를 관�
 process다. Routing Worker가 중단돼도 이미 적용된 Edge config와 project gateway는 계속 요청을
 처리한다.
 
-## 확인된 현재 동작
+## 승인 시 확인한 기반 동작
 
 - Control Compose는 Control PostgreSQL, FastAPI API, deployment Worker와 production frontend를
   `heimdall-python-local` lifecycle로 관리한다.
@@ -129,9 +129,11 @@ Project runtime lifecycle
    └─ heimdall-edge network의 deterministic alias
 ```
 
-Edge Gateway는 `80/443`의 유일한 public listener이고 `unless-stopped` restart policy를 사용한다.
-local에서는 충돌 없는 configurable loopback port로 같은 구조를 재현한다. Management frontend는
-Edge network의 고정 alias로 연결되며 Control Plane 중단 시 관리 화면만 unavailable이 된다.
+Edge Gateway는 현재 configurable HTTP port의 유일한 public listener이고 `unless-stopped`
+restart policy를 사용한다. local에서는 충돌 없는 loopback port로 같은 구조를 재현한다.
+Management frontend는 Edge network의 고정 alias로 연결되며 Control Plane 중단 시 관리
+화면만 unavailable이 된다. HTTPS를 추가할 때의 TLS 종료 지점도 이 Edge지만 listener·certificate
+구현은 아직 없다.
 
 ### 2. Edge network와 project isolation
 
@@ -182,13 +184,20 @@ API, frontend와 project container에는 전달하지 않는다.
 Control DB의 applied route snapshot을 hostname 순서로 정렬해 하나의 bounded generated route config로
 렌더링한다. 개별 요청이 NGINX 파일을 직접 덧붙이거나 삭제하지 않는다.
 
-1. Routing Worker가 claim revision의 전체 desired snapshot을 읽는다.
+1. Routing Worker가 durable `applied_hostname` 전체 snapshot을 읽고 현재 claim의 desired 변경을
+   해당 project slot에만 합성한다.
 2. 임시 config를 owner-only 경로에 작성한다.
-3. 고정 NGINX image와 exact Edge network에서 `nginx -t`를 실행한다.
+3. exact-label 실행 Edge container에서 현재 main config와 렌더링된 management config를 읽고,
+   이 두 파일과 candidate public route config 전체를 고정 NGINX image·exact Edge network에 mount해
+   `nginx -t`를 실행한다.
 4. 검증된 파일만 atomic replace한다.
 5. exact managed Edge container를 확인한 뒤 reload한다.
 6. 관리 hostname과 변경된 project hostname을 probe한다.
 7. claim token과 desired revision이 여전히 일치할 때만 applied revision과 `ACTIVE`를 기록한다.
+
+Routing Worker는 candidate 생성 전, config 교체 전, probe 후 finalize 전에 최초에 읽은
+전체 applied snapshot이 여전히 같은지 다시 확인한다. 다른 claim이 하나라도 applied route를
+바꿔 stale full snapshot이 되면 현재 claim을 다시 queue하고 그 snapshot으로 finalize하지 않는다.
 
 test·reload·probe가 실패하면 이전 generated config를 복원하고 기존 route를 다시 probe한다. 복원 여부를
 확정할 수 없으면 job을 terminal 성공으로 쓰지 않고 `FAILED` 또는 `UNCERTAIN` 상태와 stable error
@@ -207,6 +216,7 @@ project_public_routes
 ├─ status                        PENDING | APPLYING | ACTIVE | INACTIVE | FAILED | UNCERTAIN
 ├─ desired_revision              monotonic integer
 ├─ applied_revision              nullable integer
+├─ applied_hostname              nullable, actual Edge snapshot; UNIQUE when present
 ├─ last_error_code               nullable stable code
 ├─ created_at
 └─ updated_at
@@ -235,6 +245,11 @@ leading/trailing hyphen과 연속 separator를 제한하며 관리 hostname, `ww
 `desired_revision`을 증가시키고 같은 transaction에서 해당 revision의 durable job을 upsert한다.
 오래된 claim은 revision fencing 때문에 새 desired state를 덮어쓸 수 없다.
 
+`applied_hostname`은 desired hostname과 별개로 Edge에 실제 로드된 마지막 hostname을 나타낸다.
+rename·disable·적용 실패 중에도 기존 route를 canonical applied snapshot에 유지하고, desired
+`hostname`과 `applied_hostname` 둘 다를 충돌 검사해 아직 Edge에 남은 hostname을 다른
+project가 선점하지 못하게 하는 구현 중 안전 확장이다.
+
 ## 공개 API와 사용자 흐름
 
 초기 API는 project resource 아래의 단일 public route로 제한한다.
@@ -246,7 +261,10 @@ DELETE /api/projects/{projectId}/public-route
 ```
 
 `PUT`은 subdomain label만 받고 server-derived hostname과 `PENDING` 상태를 반환한다. 동일 desired
-subdomain 재요청은 idempotent하다. 다른 project가 hostname을 선점했으면 stable `409`를 반환한다.
+subdomain 재요청은 `PENDING/APPLYING/ACTIVE`에서 revision이나 job을 바꾸지 않는 idempotent
+요청이다. `FAILED/UNCERTAIN`에서 같은 PUT을 다시 보내면 새 revision을 만들지 않고 현재
+desired revision job을 다시 queue한다. 다른 project가 desired 또는 applied hostname을 선점했으면
+stable `409`를 반환한다.
 `DELETE`는 row를 즉시 지우지 않고 `DISABLED` desired state와 새 revision을 기록해 Edge config에서
 제거된 사실을 확인한 뒤 비활성 상태로 수렴시킨다.
 
@@ -279,14 +297,14 @@ job을 다시 available하게 한다. public route 실패가 application generat
 
 ## TLS와 certificate 경계
 
-Load Balancer가 없으므로 production HTTPS의 종료 지점은 Edge Gateway다. certificate와 private key는
-repository, image, Control DB와 API에 저장하지 않고 owner-only host path에서 Edge container에
-read-only mount한다. Routing Worker는 certificate 원문을 읽거나 응답에 포함하지 않는다.
+Load Balancer가 없으므로 향후 production HTTPS의 종료 지점은 Edge Gateway다. 현재
+구현은 HTTP listener만 제공하며 certificate/key path, HTTPS listener와 reload 계약을
+추가하지 않았다.
 
-wildcard certificate의 발급·자동 갱신 방식은 아직 선택하지 않았다. 초기 구현은 operator-provided
-certificate path와 reload 계약까지만 만들 수 있으며, 실제 public release 전에 DNS provider와
-DNS-01 자동화 여부를 별도 승인한다. certificate가 없거나 만료됐을 때 기존 HTTP/project runtime을
-삭제하거나 route metadata를 자동 변경하지 않는다.
+wildcard certificate의 발급·자동 갱신 방식은 아직 선택하지 않았다. 수동 배치와 DNS-01
+자동화 중 하나를 임의로 고르지 않고 별도 승인 후 certificate/private key의 owner-only host
+path, read-only Edge mount와 갱신/reload 계약을 정한다. TLS 결정은 기존 HTTP route metadata나
+project runtime을 삭제·변경하지 않는다.
 
 ## 실패 영향과 복구
 
@@ -338,8 +356,8 @@ container, unknown network와 broad config directory를 삭제하지 않는다.
 
 - Edge NGINX, external Edge network, generated config root와 restart policy를 별도 lifecycle로 구성한다.
 - Control frontend를 Edge network의 고정 alias에 연결한다.
-- exact 관리 hostname, unknown host `404`, Docker label, `80/443` bind와 Control Compose 독립 생존을
-  검증한다.
+- exact 관리 hostname, unknown host `404`, Docker label, configurable HTTP bind와 Control Compose
+  독립 생존을 검증한다. HTTPS bind는 TLS 방식 승인 후의 별도 단계다.
 - local에서는 test-owned port와 hostname으로 public listener 구조를 재현한다.
 
 안전한 중단 지점: 관리 hostname만 Edge를 통과하고 project route는 기존 loopback Preview를 유지한다.
@@ -411,11 +429,11 @@ container, unknown network와 broad config directory를 삭제하지 않는다.
 - reserved subdomain labels
 - Edge config root와 exact managed container/network name
 - Routing Worker poll, lease, heartbeat, retry와 attempt 상한
-- Edge HTTP/HTTPS bind와 local probe endpoint
-- operator-provided certificate/key path
+- Edge HTTP bind와 local probe endpoint
 
 환경변수에는 certificate 원문이나 project별 hostname mapping을 넣지 않는다. route mapping의 원본은
-Control PostgreSQL이다.
+Control PostgreSQL이다. HTTPS bind와 certificate/key path는 TLS 방식 승인 전에는 설정으로
+추가하지 않는다.
 
 ## 문서 영향
 
@@ -429,7 +447,8 @@ Plan 승인 시점에는 이 문서만 추가한다. 현재 `README.md`, `projec
 - `project-docs/architecture.md`: Edge data path, Routing Worker, Edge network와 desired/applied route
 - `project-docs/project-profile.md`: 단일 VM public hostname과 gateway 생존 계약
 - `project-docs/product-scope.md`: wildcard hostname routing 포함, custom domain·multi-node 비범위
-- `.env.example`: domain, Edge runtime, Worker와 certificate path 설정
+- `.env.example`: domain, Edge HTTP runtime과 Routing Worker 설정. TLS 승인 전에는 certificate
+  path 설정을 추가하지 않는다.
 
 ## 남은 결정
 
@@ -449,3 +468,64 @@ Plan 승인 시점에는 이 문서만 추가한다. 현재 `README.md`, `projec
   끊는 문제를 확인해 별도 Edge lifecycle과 외부 고정 network를 선택했다.
 - `2026-08-20`: 현재 제품 문서는 구현된 사실만 설명하므로 Plan 작성 시점에는 다른 현재 문서를
   변경하지 않고, 구현 완료 단계에서 관련 문서를 함께 갱신하기로 했다.
+- `2026-08-21`: migration, project당 public route aggregate, GET/PUT/DELETE API와 UI를 구현했다.
+  server-derived lowercase hostname, reserved label, desired/applied revision, 동일 요청 멱등성,
+  conflict·disable·동일 revision retry 계약을 focused/unit test로 검증했다.
+- `2026-08-21`: 적용 중 rename·disable·실패가 기존 valid route를 잃거나 다른 project에 넘기지
+  않도록 nullable unique `applied_hostname`을 desired hostname과 별도의 durable applied snapshot으로
+  추가했다. 실제 PostgreSQL integration 5개가 uniqueness, stale claim·revision fencing, expired claim
+  회수, applied hostname 보존, disable을 검증했다.
+- `2026-08-21`: `heimdall-python-edge` 별도 Compose, exact 관리 route, default `404`, read-only
+  generated config mount, tmpfs management config와 fixed exact-label Edge network를 구현했다. Control
+  frontend는 고정 alias로 external Edge network에 연결되며 Control Compose가 Edge resource를
+  소유하지 않는다.
+- `2026-08-21`: project gateway의 최초 생성, running generation rebase, stopped gateway 복구와
+  rollback이 exact-label Edge network의 deterministic alias와 기존 loopback stable Preview port를 함께
+  유지하도록 구현했다. Edge 연결을 확정하지 못하면 active metadata를 전환하지
+  않는 복구 test를 포함했다.
+- `2026-08-21`: 별도 Routing Worker에 claim token·lease·desired revision과 stale full-applied-snapshot
+  fencing, bounded retry, startup reconciliation을 구현했다. exact-label live Edge의 main·management
+  config와 candidate public route config 전체를 함께 `nginx -t`로 검증하고, lock·atomic
+  replace·reload·probe 또는 확실한 claim rejection 중 실패하면 이전 config를 복원하는 계약을
+  focused/unit test로 검증했다.
+- `2026-08-21`: test-owned project·domain·Docker label만 사용한 실제 hostname Docker smoke
+  1개가 두 project route 격리, unknown/malformed/다른 base domain `404`, deterministic alias, 동일
+  stable port gateway 재생성 후 새 deployment marker, 한 route disable 후 다른 route·관리 route
+  유지를 검증했다. Control DB 연결을 닫은 후에도 이미 적용된 public route가 응답해
+  data path가 Control DB와 Routing Worker를 우회함을 확인했다.
+- `2026-08-24`: frontend `pnpm verify`가 35개 test와 formatting·lint·typecheck·production build를
+  통과했고, Chromium project detail E2E 2개가 public hostname panel을 포함해 통과했다.
+- `2026-08-24`: Edge와 Control은 새 public-routing 변수와 현재 checkout의 절대 runtime 경로를 명시한
+  validation overlay로, Managed DB는 기존 별도 `.env`로 세 Compose config를 최종 상태에서 통과시켰다.
+  렌더된 Control config에서 Docker socket은 두 Worker에만 있고 API·frontend에는 없으며, frontend만
+  external Edge network alias를 갖는다. Routing Worker는 사용하지 않는 Managed DB provisioner credential을
+  받지 않는 explicit environment를 사용한다. Edge public bind는 설정값이고 generated config mount는
+  read-only다.
+  repository-ignored 로컬 `.env`는 수정하지 않았으며 실제 기동 전 `.env.example`의 새 hostname/Edge 변수와
+  현재 checkout의 runtime·Git 절대 경로로 갱신해야 한다.
+- `2026-08-24`: candidate switch 전 owner-only durable transaction journal과 directory fsync,
+  finalize 뒤 commit phase를 추가했다. `BaseException`으로 finalize 전과 DB commit 직후 marker 전 crash를
+  각각 모사했다. DB-free startup은 current가 journal의 previous/candidate인지 검증만 해 valid data path를
+  유지하고, DB 연결 뒤 canonical startup reconciliation이 전자는 previous, 후자는 candidate로 수렴시킨다.
+  journal 삭제 실패도 candidate를 rollback하지 않으며, 무관한 current config는 mutation하지 않고 startup
+  reconciliation 성공 전 새 claim을 처리하지 않는다.
+- `2026-08-24`: PostgreSQL commit 성공 뒤 ACK가 유실되는 finalize 모호성에서는 candidate와
+  `PREPARED` journal을 보존하고 `EDGE_FINALIZE_UNCERTAIN`으로 처리한다. 확실한 claim rejection만
+  previous로 즉시 복원하며, 다음 loop는 canonical reconciliation이 성공하기 전 새 claim을 금지한다.
+  commit 전 실패와 commit 성공/ACK 오류 양쪽, reconciliation 실패 중 다음 claim 차단을 회귀 test로
+  검증했다.
+- `2026-08-24`: lease 검증을 PostgreSQL `clock_timestamp()`로 옮겨 lock 대기 중 만료된 claim을
+  차단하고, stopped gateway를 `GATEWAY_START_FAILED`로 분류했다. 첫 성공 deployment와 active runtime
+  reconciliation은 exact project의 현재 gateway-wait job만 즉시 깨운다. 전용 PostgreSQL에서 관련
+  integration 5개를 두 번 연속 통과시켜 cleanup과 재실행 격리도 확인했다.
+- `2026-08-24`: test-id label이 일치하는 별도 Edge, `heimdall_routing_smoke_*` 전용 빈 DB와 test-owned
+  hostname만 허용하도록 actual smoke를 격리했다. config root도 exact test-id basename, 현재 사용자 소유
+  `0700` directory와 `0600` owner marker, 초기 무라우트 snapshot만 허용하고 실행 중 Edge의 exact resolved
+  read-only bind를 확인한다. 실제 Docker/NGINX smoke를 최종 코드에서 두 번 연속 통과시켰고, 매 실행 뒤
+  project/route/job row 0개, 임시 gateway/generation network 0개와 빈 Edge route snapshot을 확인했다.
+- `2026-08-24`: backend 최종 gate는 Ruff format/check와 `199 passed, 18 skipped`, frontend 최종
+  gate는 `35 passed`와 typecheck/build를 통과했다. skip 18개는 별도 opt-in integration이며 이 feature의
+  PostgreSQL 및 Docker hostname smoke는 위 전용 환경에서 별도로 실행했다.
+- `2026-08-21`: 현재 public hostname은 인증 없는 HTTP URL만 제공한다. Edge NGINX가 향후
+  TLS 종료 지점이지만 HTTPS listener, certificate 배치와 wildcard certificate 발급·갱신
+  자동화 방식은 구현·선택하지 않았다.
