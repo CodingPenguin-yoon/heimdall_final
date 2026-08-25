@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import secrets
 import time
@@ -16,9 +18,21 @@ from heimdall.common.errors import AppError
 ADMIN_USERNAME = "admin"
 SESSION_MAX_AGE_SECONDS = 8 * 60 * 60
 SESSION_COOKIE_NAME = "__Host-heimdall-session"
+LOCAL_SESSION_COOKIE_NAME = "heimdall-local-session"
 SESSION_KEYS = frozenset({"username", "expires_at", "csrf_token", "credential_revision"})
 CSRF_TOKEN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 CREDENTIAL_REVISION = re.compile(r"^[a-f0-9]{64}$")
+_LOCAL_SESSION_SIGNING_CONTEXT = b"heimdall-local-http-session-v1"
+
+
+def session_signing_key(signing_key: str, *, secure: bool) -> str:
+    if secure:
+        return signing_key
+    return hmac.new(
+        signing_key.encode("utf-8"),
+        _LOCAL_SESSION_SIGNING_CONTEXT,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

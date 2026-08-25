@@ -8,7 +8,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from heimdall.api import router
 from heimdall.auth.secrets import load_admin_secrets
-from heimdall.auth.service import SESSION_COOKIE_NAME, SESSION_MAX_AGE_SECONDS, AdminAuthService
+from heimdall.auth.service import (
+    LOCAL_SESSION_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    SESSION_MAX_AGE_SECONDS,
+    AdminAuthService,
+    session_signing_key,
+)
 from heimdall.common.errors import install_error_handlers
 from heimdall.config import Settings
 from heimdall.database import Database
@@ -105,12 +111,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.auth = auth
     app.add_middleware(
         SessionMiddleware,
-        secret_key=admin_secrets.signing_key,
-        session_cookie=SESSION_COOKIE_NAME,
+        secret_key=session_signing_key(
+            admin_secrets.signing_key,
+            secure=app_settings.auth_cookie_secure,
+        ),
+        session_cookie=(
+            SESSION_COOKIE_NAME if app_settings.auth_cookie_secure else LOCAL_SESSION_COOKIE_NAME
+        ),
         max_age=SESSION_MAX_AGE_SECONDS,
         path="/",
         same_site="strict",
-        https_only=True,
+        https_only=app_settings.auth_cookie_secure,
         domain=None,
     )
     install_error_handlers(app)

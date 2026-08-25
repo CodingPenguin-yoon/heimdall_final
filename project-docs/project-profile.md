@@ -12,8 +12,9 @@
 ## 기술 방향
 
 - Backend: Python, FastAPI, Pydantic, psycopg
-- Authentication: one fixed `admin`, Argon2id verification, an eight-hour signed Secure cookie,
-  and session-bound CSRF enforced by the Backend
+- Authentication: one fixed `admin`, Argon2id verification, an eight-hour signed cookie that is
+  Secure by default and in production, an explicit loopback-only HTTP development mode, and
+  session-bound CSRF enforced by the Backend
 - Authentication secrets: a canonical non-symlink owner-only host directory outside the repository,
   mounted read-only into the API only; API-only host-source metadata rejects direct lexical overlap
   with runtime, Git, and Edge roots; no password, hash, or signing-key value appears in environment,
@@ -40,9 +41,13 @@
 - `POST /api/auth/login`, `GET /api/auth/session`, and `POST /api/auth/logout` own the authentication
   contract. `/api/health` and auth bootstrap remain public entry points; all other management APIs
   and SSE handshakes require a valid admin session.
-- The signed `__Host-heimdall-session` cookie has an eight-hour absolute lifetime and is `Secure`,
-  `HttpOnly`, host-only, `SameSite=Strict`, and scoped to `/`. Unsafe authenticated requests require
-  the exact session-bound `X-CSRF-Token`.
+- By default and in production, the signed `__Host-heimdall-session` cookie has an eight-hour
+  absolute lifetime and is `Secure`, `HttpOnly`, host-only, `SameSite=Strict`, and scoped to `/`.
+  Explicit `HEIMDALL_AUTH_COOKIE_SECURE=false` uses `heimdall-local-session` without `Secure` only
+  for same-host loopback HTTP development and is rejected unless the management hostname ends in
+  `.localhost`. Its purpose-derived signing key prevents cross-mode cookie replay; every other
+  cookie and CSRF property remains unchanged. Unsafe authenticated requests require the exact
+  session-bound `X-CSRF-Token`.
 - The frontend resolves the session before rendering protected routes, returns successful login to
   the original internal deep link, keeps CSRF state in memory, exposes desktop/mobile logout, and
   clears protected query state on `401`, including a `401` found by deduplicated session revalidation
@@ -104,9 +109,11 @@
   실행한다. API·두 Worker·frontend 또는 Control PostgreSQL만 중단되면 기존 HTTP public URL과
   loopback Preview는 유지하지만 새 route·배포·관리 변경은 중단된다. Managed PostgreSQL
   lifecycle은 Control Plane과 분리되어 DB 사용 project의 application data path는 유지된다.
-- Public project hostnames and loopback Preview remain unauthenticated. Management login instead
-  requires HTTPS at the existing operator-managed front Edge; certificate installation, issuance,
-  renewal, and the operator's TLS configuration remain outside this repository.
+- Public project hostnames and loopback Preview remain unauthenticated. Default and production
+  management login requires HTTPS at the existing operator-managed front Edge; certificate
+  installation, issuance, renewal, and the operator's TLS configuration remain outside this
+  repository. The explicit insecure-cookie mode is limited to loopback HTTP development and requires
+  one consistent browser hostname.
 - 전역 배포 활동은 기존 Deployment 공개 필드로 최근 100건을 최신순 조회하고, project 이름은 기존
   project 목록과 UI에서 결합한다. 진행 중 배포가 있을 때만 목록을 자동 갱신한다.
 - 구조화 deployment event는 raw application output 없이 Control DB에 저장하고, 초기 snapshot 뒤

@@ -62,8 +62,8 @@ POST /api/auth/logout
 ```
 
 `/api/health` and the authentication entry points remain outside the management-router dependency.
-Login verifies the stored Argon2id hash and creates an eight-hour signed
-`__Host-heimdall-session` cookie. The cookie is `Secure`, `HttpOnly`, host-only,
+Login verifies the stored Argon2id hash and creates an eight-hour signed session cookie. By default
+and in production, it is named `__Host-heimdall-session` and is `Secure`, `HttpOnly`, host-only,
 `SameSite=Strict`, and scoped to `/`; it contains only the admin identity, absolute expiry, a CSRF
 token, and a credential revision. Logout requires the exact session-bound `X-CSRF-Token`, clears
 the cookie, and returns JSON. Every other management API, including SSE handshakes, requires a
@@ -78,12 +78,17 @@ query cache on `401`. The App shell exposes the current `admin` identity and log
 mobile. The signed cookie is browser-managed; the frontend does not store the password, returned
 session payload, or CSRF token in `localStorage` or `sessionStorage`.
 
-Management login is supported only at `https://<management-hostname>/login`. The existing
-operator-managed front Edge on the OCI VM must terminate HTTPS; certificate issuance, installation,
-renewal, and the operator's Edge TLS configuration are outside this repository. The Secure cookie
-intentionally makes the direct checked-in HTTP listener unsuitable for management login. Project
-public hostnames and loopback Preview URLs remain unauthenticated and do not receive the host-only
-management cookie.
+Default and production management login is supported only at
+`https://<management-hostname>/login`. The existing operator-managed front Edge on the OCI VM must
+terminate HTTPS; certificate issuance, installation, renewal, and the operator's Edge TLS
+configuration are outside this repository. For loopback development only, explicitly setting
+`HEIMDALL_AUTH_COOKIE_SECURE=false` makes the API issue `heimdall-local-session` without `Secure` so
+HTTP login can be tested locally. The API accepts this setting only when
+`HEIMDALL_MANAGEMENT_HOSTNAME` ends in `.localhost` and signs the local cookie with a separate
+purpose-derived key, so renaming it cannot turn it into a valid production cookie. Keep every
+browser request on the same host spelling, such as `127.0.0.1` throughout or `localhost` throughout,
+because the cookie remains host-only; never expose this mode beyond loopback. Project public
+hostnames and loopback Preview URLs remain unauthenticated and do not receive the management cookie.
 
 ### Initialize and rotate administrator secrets
 
@@ -123,7 +128,8 @@ docker compose --env-file .env -f infra/dev/compose.yaml \
 ```
 
 Changing either credential invalidates existing sessions; the operator signs in again through the
-HTTPS management hostname.
+HTTPS management hostname, or through the same-host loopback URL only when the explicit local HTTP
+development mode is enabled.
 
 ## Local Docker Compose
 
@@ -137,6 +143,7 @@ cd ../heimdall-python
 cp .env.example .env
 # Set passwords, runtime/Git/Edge absolute paths, management/deployment hostnames, and
 # HEIMDALL_AUTH_SECRET_ROOT. Initialize that new auth directory before starting Compose.
+# Keep HEIMDALL_AUTH_COOKIE_SECURE=true except for explicit loopback-only HTTP development.
 # HEIMDALL_EDGE_CONFIG_ROOT로 지정한 owner-only host directory를 먼저 만든다.
 backend/.venv/bin/heimdall-admin-init /absolute/private/path/heimdall-auth
 docker compose --env-file .env -f infra/edge/compose.yaml up -d --wait
@@ -152,8 +159,10 @@ docker compose --env-file .env -f infra/dev/compose.yaml ps
 ```
 
 - UI: `http://127.0.0.1:5173`
-- Management login: `https://<HEIMDALL_MANAGEMENT_HOSTNAME>/login` with username `admin`; use the
-  logout action in the App shell to end the session
+- Management login: by default, `https://<HEIMDALL_MANAGEMENT_HOSTNAME>/login` with username
+  `admin`; for loopback HTTP development only, set `HEIMDALL_AUTH_COOKIE_SECURE=false`, rebuild and
+  recreate the API, then use `http://127.0.0.1:5173/login` or `http://localhost:5173/login` without
+  switching between those hostnames; use the logout action in the App shell to end the session
 - API health: `http://127.0.0.1:8000/api/health`
 - 기본 Edge HTTP listener: `http://127.0.0.1:8088`
 - 기본 관리 route 확인:

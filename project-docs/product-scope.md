@@ -4,7 +4,7 @@
 
 ```text
 Initialize the fixed administrator secrets
--> Sign in as admin through the HTTPS management hostname
+-> Sign in as admin through the HTTPS management hostname, or explicit same-host loopback HTTP mode
 -> Public GitHub 저장소 등록
 -> main 검증
 -> service와 route 설정
@@ -21,8 +21,9 @@ Initialize the fixed administrator secrets
 ## 포함
 
 - One fixed `admin` account with Argon2id password verification and no user/session database tables
-- Login, session lookup, and logout through a signed eight-hour Secure, HttpOnly, host-only,
-  `SameSite=Strict` cookie
+- Login, session lookup, and logout through a signed eight-hour cookie that is Secure by default and
+  in production, HttpOnly, host-only, and `SameSite=Strict`; explicit loopback HTTP development uses
+  the separate `heimdall-local-session` name without Secure
 - Session-bound CSRF for unsafe management requests and default-deny authentication for all
   management APIs and SSE handshakes
 - A public `/login` route with session-first rendering, deep-link restoration, logout, and `401`
@@ -30,8 +31,10 @@ Initialize the fixed administrator secrets
 - A browser-managed signed cookie with no password, returned session payload, or CSRF token stored in
   `localStorage` or `sessionStorage`
 - Owner-only authentication files mounted read-only into the API service only
-- Operator-provided HTTPS at the existing front Edge as a management-login prerequisite; TLS and
-  certificate operations remain outside the repository
+- Operator-provided HTTPS at the existing front Edge as the default and production management-login
+  prerequisite; explicit `HEIMDALL_AUTH_COOKIE_SECURE=false` requires a `.localhost` management
+  hostname and is limited to one consistent loopback browser hostname, while TLS and certificate
+  operations remain outside the repository
 - Public HTTPS GitHub repository
 - 고정 `main` branch
 - multi-service Dockerfile build

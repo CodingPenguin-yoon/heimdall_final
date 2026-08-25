@@ -18,6 +18,7 @@ def test_runtime_probe_and_broker_socket_defaults_preserve_host_execution(
     monkeypatch.setenv("HEIMDALL_RUNTIME_ROOT", str(runtime_root))
     monkeypatch.delenv("HEIMDALL_RUNTIME_PROBE_HOST", raising=False)
     monkeypatch.delenv("HEIMDALL_BROKER_SOCKET_ROOT", raising=False)
+    monkeypatch.delenv("HEIMDALL_AUTH_COOKIE_SECURE", raising=False)
 
     settings = Settings.from_environment()
 
@@ -30,6 +31,40 @@ def test_runtime_probe_and_broker_socket_defaults_preserve_host_execution(
     assert settings.edge_network_name == "heimdall-edge"
     assert settings.auth_secret_root == Path("/run/secrets/heimdall/auth")
     assert settings.auth_secret_source_root == settings.auth_secret_root
+    assert settings.auth_cookie_secure is True
+
+
+def test_auth_cookie_secure_can_be_disabled_explicitly_for_local_http(monkeypatch) -> None:
+    monkeypatch.setenv("HEIMDALL_AUTH_COOKIE_SECURE", "false")
+
+    settings = Settings.from_environment()
+
+    assert settings.auth_cookie_secure is False
+
+
+def test_auth_cookie_secure_can_only_be_disabled_for_localhost_management(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HEIMDALL_AUTH_COOKIE_SECURE", "false")
+    monkeypatch.setenv("HEIMDALL_MANAGEMENT_HOSTNAME", "control.example.test")
+    monkeypatch.setenv("HEIMDALL_DEPLOYMENT_BASE_DOMAIN", "preview.example.test")
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"HEIMDALL_AUTH_COOKIE_SECURE can only be false for a "
+            r"\.localhost management hostname"
+        ),
+    ):
+        Settings.from_environment()
+
+
+@pytest.mark.parametrize("value", ("", "0", "yes", "disabled"))
+def test_auth_cookie_secure_rejects_non_boolean_values(monkeypatch, value: str) -> None:
+    monkeypatch.setenv("HEIMDALL_AUTH_COOKIE_SECURE", value)
+
+    with pytest.raises(ValueError, match="HEIMDALL_AUTH_COOKIE_SECURE must be true or false"):
+        Settings.from_environment()
 
 
 def test_compose_runtime_probe_and_broker_socket_can_be_configured(

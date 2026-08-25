@@ -280,9 +280,15 @@ runtime, database, public-route management, diagnostic, log, and SSE routes are 
 the shared admin dependency. Safe authenticated `GET` requests need no CSRF header; authenticated
 `POST`, `PUT`, `PATCH`, and `DELETE` requests do.
 
-Starlette signs the eight-hour `__Host-heimdall-session` cookie with the file-backed signing key. It
-is `Secure`, `HttpOnly`, host-only, `SameSite=Strict`, and scoped to `/`. Its complete payload is the
-fixed username, absolute expiry, session-bound CSRF token, and credential revision; it contains no
+Starlette signs the eight-hour session cookie with the file-backed signing key. By default and in
+production, it is named `__Host-heimdall-session` and is `Secure`, `HttpOnly`, host-only,
+`SameSite=Strict`, and scoped to `/`. Explicit `HEIMDALL_AUTH_COOKIE_SECURE=false` instead selects
+`heimdall-local-session` without `Secure` solely for loopback HTTP development; all other cookie
+properties remain unchanged, and the browser must use one consistent hostname. API configuration
+rejects this mode unless the management hostname ends in `.localhost`. The local cookie uses a
+purpose-derived signing key distinct from the raw key used for the production cookie, so a signed
+value cannot cross modes by changing only its cookie name. The complete payload is the fixed
+username, absolute expiry, session-bound CSRF token, and credential revision; it contains no
 password, password hash, or signing key. Expiry, signature tampering, a different signing key, or a
 credential revision derived from a different password hash invalidates the session. Authentication
 responses are not cacheable.
@@ -411,11 +417,14 @@ refuses a target inside a Git worktree or an existing directory. Control Compose
 host directory read-only at `/run/secrets/heimdall/auth` in the API only and passes that container
 path as `HEIMDALL_AUTH_SECRET_ROOT`. It also derives the non-secret
 `HEIMDALL_AUTH_SECRET_SOURCE_ROOT` API metadata from the same host source; no second `.env` setting is
-required. API startup rejects direct lexical equality or containment between that source and the
-runtime root, Git workspace root, or Edge config root. The initialized path must remain canonical and
-non-symlink because Docker dereferences a host bind-source symlink before the container can inspect
-it. The deployment Worker, Routing Worker, frontend, Edge, Managed DB, and application containers
-receive neither auth key nor the mount. The password, hash, and signing key are absent from Compose
+required. Control Compose also passes `HEIMDALL_AUTH_COOKIE_SECURE` to the API only, defaulting to
+`true`; an explicit `false` selects the loopback-only HTTP development cookie mode and API startup
+rejects it unless `HEIMDALL_MANAGEMENT_HOSTNAME` ends in `.localhost`. API startup also rejects
+direct lexical equality or containment between the auth source and the runtime root, Git workspace
+root, or Edge config root. The initialized path must remain canonical and non-symlink because Docker
+dereferences a host bind-source symlink before the container can inspect it. The
+deployment Worker, Routing Worker, frontend, Edge, Managed DB, and application containers receive
+neither auth key nor the mount. The password, hash, and signing key are absent from Compose
 environment values and Docker inspect environment; mount metadata contains paths only.
 
 The Managed PostgreSQL lifecycle and volume are separate. Control and Managed DB Compose projects
@@ -824,9 +833,10 @@ layers and one-to-one forwarding wrappers are avoided.
 - The product authenticates one fixed administrator only. Signup, multiple users, user management,
   roles, project ownership, password recovery, database-backed users/sessions, and private Preview
   access are not implemented.
-- Management authentication requires HTTPS terminated by the operator's existing front Edge. This
-  repository does not own the TLS listener, certificate placement, issuance, or renewal automation;
-  its checked-in Edge configuration remains HTTP-only.
+- Default and production management authentication requires HTTPS terminated by the operator's
+  existing front Edge. This repository does not own the TLS listener, certificate placement,
+  issuance, or renewal automation; its checked-in Edge configuration remains HTTP-only. Explicit
+  insecure-cookie mode supports HTTP login only for same-host loopback development.
 - The operator must configure both the exact management DNS record and the deployment wildcard DNS
   record; Heimdall does not create DNS records.
 - Heimdall supports one server-derived hostname per project under the configured deployment base

@@ -37,6 +37,7 @@ class Settings:
     diagnostic_retention_days: float = 30
     auth_secret_root: Path = Path("/run/secrets/heimdall/auth")
     auth_secret_source_root: Path = Path("/run/secrets/heimdall/auth")
+    auth_cookie_secure: bool = True
     management_hostname: str = "heimdall.localhost"
     deployment_base_domain: str = "deployments.localhost"
     reserved_public_subdomains: tuple[str, ...] = ("admin", "api", "www")
@@ -106,6 +107,11 @@ class Settings:
             "HEIMDALL_AUTH_SECRET_SOURCE_ROOT",
             os.environ.get("HEIMDALL_AUTH_SECRET_SOURCE_ROOT", str(auth_secret_root)),
         )
+        auth_cookie_secure = _boolean("HEIMDALL_AUTH_COOKIE_SECURE", default=True)
+        if not auth_cookie_secure and not management_hostname.endswith(".localhost"):
+            raise ValueError(
+                "HEIMDALL_AUTH_COOKIE_SECURE can only be false for a .localhost management hostname"
+            )
         edge_config_root = Path(
             os.environ.get("HEIMDALL_EDGE_CONFIG_ROOT", "/tmp/heimdall-python-edge")
         ).resolve()
@@ -162,6 +168,7 @@ class Settings:
             ),
             auth_secret_root=auth_secret_root,
             auth_secret_source_root=auth_secret_source_root,
+            auth_cookie_secure=auth_cookie_secure,
             management_hostname=management_hostname,
             deployment_base_domain=deployment_base_domain,
             reserved_public_subdomains=tuple(sorted(reserved)),
@@ -224,6 +231,18 @@ def _absolute_lexical_path(name: str, value: str) -> Path:
     if not path.is_absolute():
         raise ValueError(f"{name} must be an absolute path")
     return Path(os.path.normpath(path))
+
+
+def _boolean(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:

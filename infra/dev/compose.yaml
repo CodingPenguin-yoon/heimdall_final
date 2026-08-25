@@ -60,6 +60,7 @@ services:
       <<: *backend-environment
       HEIMDALL_AUTH_SECRET_ROOT: /run/secrets/heimdall/auth
       HEIMDALL_AUTH_SECRET_SOURCE_ROOT: ${HEIMDALL_AUTH_SECRET_ROOT:?required}
+      HEIMDALL_AUTH_COOKIE_SECURE: ${HEIMDALL_AUTH_COOKIE_SECURE-true}
     ports:
       - "127.0.0.1:${HEIMDALL_API_PORT:-8000}:8000"
     volumes:
