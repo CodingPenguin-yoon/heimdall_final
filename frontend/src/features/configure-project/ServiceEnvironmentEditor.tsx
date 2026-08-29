@@ -1,9 +1,11 @@
 import type { EnvironmentVariable, ServiceConfig } from '@/entities/project/types';
 
+type EnvironmentService = Pick<ServiceConfig, 'name' | 'environment' | 'projectDatabaseAccess'>;
+
 interface ServiceEnvironmentEditorProps {
-  service: ServiceConfig;
+  service: EnvironmentService;
   serviceIndex: number;
-  onChange: (patch: Partial<ServiceConfig>) => void;
+  onChange: (patch: Partial<Pick<ServiceConfig, 'environment' | 'projectDatabaseAccess'>>) => void;
 }
 
 export function ServiceEnvironmentEditor({
