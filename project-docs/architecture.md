@@ -328,6 +328,81 @@ The Deployment Worker owns generation creation, Project Gateway activation, roll
 preservation of the deterministic Edge alias whenever the gateway is created, rebased, restored, or
 recreated.
 
+#### End-to-end example: registration to public route
+
+The following sequence uses a two-service project with an optional Managed PostgreSQL database and
+a public hostname. It shows the durable Control PostgreSQL writes separately from Git, Docker,
+Managed PostgreSQL, Project Gateway, and Shared Edge effects.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as 관리자
+    participant API as Heimdall API
+    participant Git as GitHub
+    participant DB as Control PostgreSQL
+    participant MDB as Managed PostgreSQL
+    participant DW as Deployment Worker
+    participant Docker as Docker Engine
+    participant GW as Project Gateway
+    participant RW as Routing Worker
+    participant Edge as Shared Edge
+
+    Admin->>API: 프로젝트 등록
+    API->>Git: Public 저장소와 main 확인
+    Git-->>API: 접근 가능
+    API->>DB: projects INSERT<br/>DRAFT, config_version=0
+
+    Admin->>API: 서비스·라우트 설정 저장
+    API->>DB: deployment_config 저장<br/>READY, config_version=1
+
+    opt Managed PostgreSQL requested
+        Admin->>API: Managed DB 생성
+        API->>DB: project_database_resources INSERT
+        API->>MDB: role · database · schema 생성
+        API->>DB: DB 상태 ACTIVE
+    end
+
+    Admin->>API: 공개 subdomain 요청
+    API->>DB: project_public_routes=PENDING<br/>public_route_jobs=PENDING
+
+    Admin->>API: 특정 commit 배포 요청
+    API->>Git: commit이 최근 main에 포함됐는지 확인
+    API->>DB: deployments=QUEUED<br/>deployment_jobs=PENDING<br/>설정 snapshot 저장
+
+    loop 작업이 없을 때 1초마다
+        DW->>DB: 배포 작업 claim 시도
+    end
+
+    DW->>DB: job=CLAIMED<br/>deployment=PREPARING<br/>lease와 claim token 기록
+    DW->>Git: exact commit checkout
+    DW->>DB: deployment=BUILDING
+    DW->>Docker: 서비스 이미지 build
+    DW->>DB: deployment=STARTING
+    DW->>Docker: generation network와 candidate 실행
+    DW->>DB: deployment=HEALTH_CHECKING
+    DW->>Docker: 서비스 health path 검사
+
+    DW->>DB: deployment=ACTIVATING
+    DW->>GW: 새 generation으로 전환
+    DW->>DB: project_runtimes active 정보 갱신
+    DW->>DB: deployment=SUCCEEDED<br/>job=DONE
+
+    DW->>DB: 대기 중인 public route 깨우기
+    RW->>DB: routing job claim
+    RW->>GW: Edge network 연결
+    RW->>Edge: NGINX config test · replace · reload
+    RW->>Edge: project hostname probe
+    RW->>DB: route=ACTIVE<br/>applied_revision=desired_revision
+```
+
+`projects.deployment_config` is the latest editable aggregate. A deployment request copies it and
+its version into immutable `deployments.config_snapshot`, so later project edits cannot alter an
+in-flight or historical deployment. Candidate images, containers, and networks exist in Docker;
+only successful activation updates `project_runtimes.active_*`. Raw secret values remain in
+owner-only files, Control PostgreSQL stores their references, versions, and fingerprints, and
+application rows remain exclusively in Managed PostgreSQL.
+
 ### Public hostname workflow
 
 ```text
@@ -406,9 +481,11 @@ the Edge mounts that directory read-only. Static management configuration is ren
 into container tmpfs.
 
 `infra/dev/compose.yaml` owns the Control PostgreSQL, API, both Workers, and frontend under the
-`heimdall-python-local` project. The frontend joins both the Control network and the external
-`heimdall-edge` network. Control Compose neither owns nor removes the Edge container, Edge network,
-or deployed project runtimes.
+`heimdall-python-local` project. Docker Desktop uses that base file directly. Ubuntu Docker Engine
+also applies `infra/dev/compose.linux.yaml`, which moves only the Deployment and Routing Workers to
+the host network and replaces their Control DB and host probe endpoints with loopback addresses.
+The frontend joins both the Control network and the external `heimdall-edge` network. Control
+Compose neither owns nor removes the Edge container, Edge network, or deployed project runtimes.
 
 Before Control Compose starts, the host-side `heimdall-admin-init` command creates a new `0700`
 authentication directory outside the repository containing `0600` `admin-password.hash` and
@@ -435,11 +512,16 @@ same paths so the host Docker daemon can resolve them. The Routing Worker receiv
 configuration root and Docker socket. Owner-only service-log broker sockets use the separate
 `broker-sockets` named volume.
 
-Local Control and Edge listeners default to `127.0.0.1`. The Compose Deployment Worker probes
-candidate health and stable Preview endpoints through `host.docker.internal`; the Routing Worker
-probes the host Edge listener through the configured Compose probe host. Host-run processes default
-to `127.0.0.1`. Local DB-enabled project containers use `host.docker.internal:55433`; production uses
-a private name such as `managed-db.internal:5432`, with the firewall limited to the current combined
+Local Control and Edge listeners default to `127.0.0.1`. On Docker Desktop, the Compose Deployment
+Worker probes candidate health and stable Preview endpoints through `host.docker.internal`, and the
+Routing Worker uses the same host path for the Edge listener. On Ubuntu Docker Engine,
+`host.docker.internal` resolves to a bridge gateway that cannot reach host loopback-only listeners.
+The Linux override therefore runs both Workers in the host network and uses `127.0.0.1` for their
+Control DB and probe endpoints without widening any published port. Host-run processes also default
+to `127.0.0.1`. This override does not make a loopback-only Managed PostgreSQL publish reachable from
+bridge application containers. DB-enabled projects on Ubuntu must use an explicitly reachable
+private endpoint. Docker Desktop defaults to `host.docker.internal:55433`; production uses a private
+name such as `managed-db.internal:5432`, with the firewall limited to the current combined
 Control/Runtime VM.
 
 Control `stop` or `down` does not remove Edge or project runtime resources. Control Compose
@@ -810,6 +892,7 @@ layers and one-to-one forwarding wrappers are avoided.
 | `backend/Dockerfile`                         | Builds the shared API/Worker image with Git and a host-daemon-compatible Docker CLI                                                           |
 | `frontend/Dockerfile`, `frontend/nginx.conf` | Build and serve React, proxy `/api`, and disable SSE buffering                                                                                |
 | `infra/dev/compose.yaml`                     | Declares Control services, ports, networks, health, Docker-socket boundaries, and the API-only auth mount                                     |
+| `infra/dev/compose.linux.yaml`               | Overrides both Workers with Ubuntu host networking and loopback Control DB/probe endpoints                                                    |
 | `infra/edge/compose.yaml`                    | Declares the independent Edge container, fixed network, HTTP bind, labels, restart policy, and config mounts                                  |
 
 ### Major call flows

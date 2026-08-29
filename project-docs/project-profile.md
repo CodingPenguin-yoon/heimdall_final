@@ -25,8 +25,8 @@
 - Source: Git CLI, Public HTTPS, `main` 고정
 - Runtime: Docker CLI, generation candidate, 프로젝트별 NGINX gateway, 고정 Edge network
 - Public Edge: Control과 별도 lifecycle의 NGINX, HTTP hostname data path와 default `404`
-- Local control plane: Docker Desktop Compose, API·deployment Worker·Routing Worker·NGINX frontend와
-  Control PostgreSQL volume
+- Local control plane: Docker Desktop base Compose와 Ubuntu Worker host-network override,
+  API·deployment Worker·Routing Worker·NGINX frontend와 Control PostgreSQL volume
 - Managed DB: 별도 Compose/VM lifecycle, private TCP endpoint와 독립 PostgreSQL volume
 - Frontend: React, TypeScript, React Router, TanStack Query, CSS Modules
 - 검증: pytest, Ruff, Vitest, Testing Library, Playwright

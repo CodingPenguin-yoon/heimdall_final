@@ -4,10 +4,12 @@ Heimdall은 Public GitHub 저장소의 `main` commit을 격리된 Docker candida
 통과한 버전만 안정적인 preview route와 project별 HTTP hostname으로 공개하는 self-hosted 배포
 관리 도구다.
 
-> **현재 상태** · Alpha · 단일 Docker host · Public GitHub 저장소
+> **현재 상태** · Alpha · 단일 Docker host · Public GitHub 저장소 · Operator-specific
 
-현재 지원 범위는 운영자가 직접 관리하는 단일 호스트 self-hosted edition이다. 향후 SaaS edition은
-별도 제공 모델이며 현재 지원 범위에 포함하지 않는다.
+이 저장소는 현재 특정 운영자의 단일 호스트 인프라에서 실제로 운영하는 self-hosted
+reference implementation이다. 범용 installer, one-click production setup, managed SaaS를 제공하지
+않는다. 로컬 Compose 절차는 개발·검증용이며 실제 운영은 DNS, TLS termination, private
+networking과 외부 Managed PostgreSQL을 운영 환경에 맞게 별도로 구성해야 한다.
 
 현재 구현 범위는 다음과 같다.
 
@@ -39,9 +41,10 @@ Heimdall은 Public GitHub 저장소의 `main` commit을 격리된 Docker candida
 - 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
 - 밝은 화이트톤 관리 UI
 
-기존 stable preview port는 계속 host의 `127.0.0.1`에만 공개한다. public hostname은 Edge의 HTTP
+기존 stable preview port는 계속 host loopback에만 공개한다. public hostname은 Edge의 HTTP
 listener를 통해 인증 없이 접근하며 Edge는 application container가 아니라 project gateway만
-가리킨다. HTTPS/TLS와 wildcard certificate 발급·갱신 방식, custom domain은 아직 포함하지 않는다.
+가리킨다. 외부 HTTPS/TLS와 wildcard certificate 발급·갱신은 운영자가 관리하는
+Cloudflare와 public reverse proxy가 담당하며 이 저장소의 lifecycle에는 포함하지 않는다.
 
 ## 구조
 
@@ -51,6 +54,103 @@ frontend/      React control UI
 project-docs/  제품·아키텍처·구현 기준
 infra/         로컬 외부 상태
 ```
+
+## 문서 안내
+
+- [상세 아키텍처와 네트워크 경계](project-docs/architecture.md)
+- [프로젝트 등록부터 배포·공개 hostname 적용까지](project-docs/architecture.md#end-to-end-example-registration-to-public-route)
+- [현재 제품 범위와 비범위](project-docs/product-scope.md)
+- [승인된 기술 방향과 운영 규칙](project-docs/project-profile.md)
+
+## 운영 아키텍처
+
+아래는 현재 외부 데모에서 사용 중인 배치 예시다. 구체적인 public·private IP는 표기하지
+않았으며, 도메인과 네트워크 endpoint는 운영 환경에서 변경할 수 있다.
+
+```mermaid
+flowchart TB
+    Admin["관리자 브라우저"]
+    Visitor["서비스 사용자"]
+
+    ManagementDNS["Cloudflare<br/>heimdallops.tech<br/>DNS + TLS"]
+    ApplicationDNS["Cloudflare<br/>*.heimdallapps.me<br/>DNS + TLS"]
+
+    subgraph PublicEdge["Public edge"]
+        ReverseProxy["OCI NGINX<br/>public reverse proxy"]
+        TunnelClient["WireGuard client"]
+    end
+
+    subgraph PrivateNetwork["Private network"]
+        TunnelServer["WireGuard server"]
+
+        subgraph HeimdallHost["Heimdall VM"]
+            Edge["Shared Edge NGINX"]
+            ControlFrontend["Control frontend"]
+            API["Heimdall API"]
+            DeploymentWorker["Deployment Worker<br/>checkout · build · health · activation"]
+            RoutingWorker["Routing Worker<br/>hostname reconciliation"]
+            ControlDB["Control PostgreSQL"]
+            Docker["Docker Engine"]
+
+            subgraph ProjectRuntime["Project runtime"]
+                Gateway["Project NGINX gateway"]
+                FrontendService["Frontend service"]
+                BackendService["Backend service"]
+            end
+        end
+
+        subgraph ManagedDatabaseHost["Managed DB VM"]
+            ManagedDB["Managed PostgreSQL<br/>project application data"]
+        end
+    end
+
+    Admin --> ManagementDNS
+    Visitor --> ApplicationDNS
+    ManagementDNS --> ReverseProxy
+    ApplicationDNS --> ReverseProxy
+    ReverseProxy --> TunnelClient --> TunnelServer --> Edge
+
+    Edge -->|"management hostname"| ControlFrontend
+    ControlFrontend -->|"/api"| API
+
+    Edge -->|"project hostname"| Gateway
+    Gateway -->|"/"| FrontendService
+    Gateway -->|"configured routes"| BackendService
+
+    API -->|"deployment and routing jobs"| ControlDB
+    DeploymentWorker -->|"claim and status"| ControlDB
+    RoutingWorker -->|"desired/applied route state"| ControlDB
+
+    DeploymentWorker -->|"Docker socket"| Docker
+    Docker --> ProjectRuntime
+    DeploymentWorker -.->|"candidate health check"| FrontendService
+    DeploymentWorker -.->|"candidate health check"| BackendService
+    DeploymentWorker -->|"atomic activation"| Gateway
+
+    RoutingWorker -->|"Edge config test and reload"| Edge
+    RoutingWorker -->|"attach deterministic alias"| Gateway
+
+    BackendService -->|"project role"| ManagedDB
+    DeploymentWorker -->|"database provisioning"| ManagedDB
+```
+
+외부 요청은 Cloudflare에서 TLS를 종료한 뒤 public reverse proxy와 private tunnel을 거쳐 Shared
+Edge에 도착한다. Shared Edge는 management hostname을 Control frontend로, project hostname을
+해당 project gateway로 분기한다. application container는 Edge에 직접 노출되지 않는다.
+
+Control Plane은 새 배포와 라우팅 변경을 관리한다. API가 Control PostgreSQL에 job을 등록하면
+Deployment Worker가 source checkout, image build, candidate health check와 gateway activation을 수행하고,
+Routing Worker가 desired/applied hostname snapshot을 Shared Edge에 반영한다. 한 번 적용된 public
+request data path에는 API, Worker, Control PostgreSQL이 포함되지 않아 Control Plane을 일시
+중지해도 기존 project gateway와 service가 살아 있으면 서비스는 계속 응답한다.
+
+Control PostgreSQL은 project, deployment, job과 routing metadata만 소유한다. Managed PostgreSQL은
+project application data만 소유하며 Control DB와 Docker socket에 접근하지 않는다. host
+loopback에 게시되는 stable Preview port는 운영자 점검용이며 외부 사용자는 project
+hostname으로만 접근한다.
+
+프로젝트 등록, immutable deployment snapshot, Worker claim, candidate activation과 public route
+적용까지의 자세한 시퀀스는 [상세 배포 흐름](project-docs/architecture.md#end-to-end-example-registration-to-public-route)에서 설명한다.
 
 ## Single administrator authentication
 
@@ -137,10 +237,15 @@ Changing either credential invalidates existing sessions; the operator signs in 
 HTTPS management hostname, or through the same-host loopback URL only when the explicit local HTTP
 development mode is enabled.
 
-## Local Docker Compose
+## Reference deployment와 Local Docker Compose
 
-기본 로컬 실행은 Docker Desktop을 사용하되 Edge Gateway, Managed PostgreSQL과 Control Plane의
-Compose lifecycle을 분리한다. Control frontend가 external `heimdall-edge` network에 연결되므로 Edge를
+아래 절차는 범용 프로덕션 installer가 아니라 단일 호스트 reference 환경을 개발·검증하기
+위한 실행 절차다. 외부 DNS, TLS, private tunnel과 VM 보안 정책은 이 Compose가 생성하지
+않으며 운영자가 별도로 관리한다.
+
+로컬 Control Plane은 Docker Desktop을 기본으로 실행하며, Ubuntu Docker Engine에서는 별도 override로
+두 Worker의 host-loopback probe 경로를 지원한다. Edge Gateway, Managed PostgreSQL과 Control Plane의
+Compose lifecycle은 분리한다. Control frontend가 external `heimdall-edge` network에 연결되므로 Edge를
 먼저 시작하고, Managed PostgreSQL과 Control PostgreSQL, FastAPI API, deployment Worker, Routing
 Worker와 production frontend를 이어서 시작한다.
 
@@ -160,8 +265,28 @@ cp .env.example .env
 docker compose --env-file .env up -d --wait
 
 cd ../heimdall-python
+# Docker Desktop
 docker compose --env-file .env -f infra/dev/compose.yaml up -d --build --wait
 docker compose --env-file .env -f infra/dev/compose.yaml ps
+```
+
+Ubuntu Docker Engine에서는 base Compose와 Linux override를 항상 함께 사용한다. Linux의
+`host.docker.internal`은 host loopback에 bind된 candidate·Preview·Edge port로 이어지지 않으므로,
+override는 두 Worker만 host network에서 실행하고 Control DB와 probe endpoint를 `127.0.0.1`로
+맞춘다. API, frontend, Control PostgreSQL과 application container의 network는 바뀌지 않는다.
+이 override는 Worker probe 문제만 해결한다. DB 사용 application container에는 Ubuntu host 또는 별도
+Managed DB VM에서 실제로 도달 가능한 private `HEIMDALL_PROJECT_DB_RUNTIME_HOST`와 port를 설정해야
+하며, host loopback에만 bind된 Managed DB는 bridge application container에서 접근할 수 없다.
+
+```bash
+docker compose --env-file .env \
+  -f infra/dev/compose.yaml \
+  -f infra/dev/compose.linux.yaml \
+  up -d --build --wait
+docker compose --env-file .env \
+  -f infra/dev/compose.yaml \
+  -f infra/dev/compose.linux.yaml \
+  ps
 ```
 
 - UI: `http://127.0.0.1:5173`
@@ -173,8 +298,10 @@ docker compose --env-file .env -f infra/dev/compose.yaml ps
 - 기본 Edge HTTP listener: `http://127.0.0.1:8088`
 - 기본 관리 route 확인:
   `curl --fail --header 'Host: heimdall.localhost' http://127.0.0.1:8088/`
-- API·두 Worker·frontend와 Control DB 로그:
-  `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`
+- API·두 Worker·frontend와 Control DB 로그는 Docker Desktop에서
+  `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`로 확인한다. Ubuntu에서는
+  `docker compose --env-file .env -f infra/dev/compose.yaml -f infra/dev/compose.linux.yaml logs --follow`로
+  같은 override를 적용한다.
 - Edge 로그: `docker compose --env-file .env -f infra/edge/compose.yaml logs --follow`
 - Managed DB 로그:
   `docker compose --env-file ../heimdall-managed-db/.env -f ../heimdall-managed-db/compose.yaml logs --follow`
@@ -200,10 +327,11 @@ Worker, frontend, Edge, Managed DB, and application containers receive neither a
 mount.
 
 Docker socket은 deployment Worker와 Routing Worker에만 mount한다. API, frontend와 application
-container에는 전달하지 않는다. deployment Worker는 Docker Desktop의 `host.docker.internal`로
-loopback publish된 candidate health와 stable preview를 검증하고, Routing Worker는 같은 host에서 Edge
-HTTP listener를 probe한다. Routing Worker 환경은 Control DB와 Edge/routing 설정만 포함하며 사용하지
-않는 Managed DB provisioner credential은 전달하지 않는다. API와 DB 접근 project container도 기본적으로
+container에는 전달하지 않는다. Docker Desktop에서는 두 Worker가 `host.docker.internal`로 host의
+loopback publish endpoint를 검증한다. Ubuntu Docker Engine에서는 Linux override가 두 Worker를 host
+network로 실행하고 candidate health, stable Preview와 Edge listener를 `127.0.0.1`로 검증한다. Routing
+Worker 환경은 Control DB와 Edge/routing 설정만 포함하며 사용하지 않는 Managed DB provisioner
+credential은 전달하지 않는다. API와 DB 접근 project container도 기본적으로
 `host.docker.internal:55433`의 외부 Managed DB에 연결한다. 운영에서는 Managed DB VM의 private DNS와
 `5432`로 바꾼다. 운영 Edge HTTP bind는 VM 방화벽 정책과 함께 명시적으로 설정한다.
 
@@ -218,8 +346,26 @@ host API·Worker·Vite 명령을 같은 포트에서 동시에 실행하지 않�
 # Control Plane만 중지한다. Edge, Managed DB와 배포된 project는 계속 실행된다.
 docker compose --env-file .env -f infra/dev/compose.yaml stop
 
+# Ubuntu Docker Engine
+docker compose --env-file .env \
+  -f infra/dev/compose.yaml \
+  -f infra/dev/compose.linux.yaml \
+  stop
+
 # Control Plane을 다시 시작하고 health를 기다린다.
 docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
+
+# Ubuntu Docker Engine에서는 Worker가 bridge mode로 되돌아가지 않도록 override를 함께 적용한다.
+docker compose --env-file .env \
+  -f infra/dev/compose.yaml \
+  -f infra/dev/compose.linux.yaml \
+  up -d --wait
+
+# Ubuntu Worker 설정만 명시적으로 다시 만들 때
+docker compose --env-file .env \
+  -f infra/dev/compose.yaml \
+  -f infra/dev/compose.linux.yaml \
+  up -d --no-deps --force-recreate worker routing-worker
 
 # Managed DB는 별도 lifecycle로 중지하거나 다시 시작한다.
 docker compose --env-file ../heimdall-managed-db/.env \

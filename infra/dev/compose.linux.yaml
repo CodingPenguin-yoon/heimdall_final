@@ -1,0 +1,12 @@
+services:
+  worker:
+    network_mode: host
+    environment:
+      HEIMDALL_DATABASE_URL: postgresql://heimdall:${HEIMDALL_CONTROL_DB_PASSWORD:?required}@127.0.0.1:${HEIMDALL_CONTROL_DB_PORT:-55432}/heimdall_control
+      HEIMDALL_RUNTIME_PROBE_HOST: 127.0.0.1
+
+  routing-worker:
+    network_mode: host
+    environment:
+      HEIMDALL_DATABASE_URL: postgresql://heimdall:${HEIMDALL_CONTROL_DB_PASSWORD:?required}@127.0.0.1:${HEIMDALL_CONTROL_DB_PORT:-55432}/heimdall_control
+      HEIMDALL_EDGE_PROBE_HOST: 127.0.0.1
