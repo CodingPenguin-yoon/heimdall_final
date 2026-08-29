@@ -7,6 +7,7 @@ import { projectQuery } from '@/entities/project/queries';
 import { StatusBadge } from '@/entities/project/StatusBadge';
 import { PreviewAccessPanel } from '@/entities/runtime/PreviewAccessPanel';
 import { projectRuntimeQuery } from '@/entities/runtime/queries';
+import { PublicRoutePanel } from '@/features/configure-public-route/PublicRoutePanel';
 import { DeployPanel } from '@/features/deploy-project/DeployPanel';
 import { ProjectDatabasePanel } from '@/features/provision-database/ProjectDatabasePanel';
 import { RuntimeReconciliationPanel } from '@/features/reconcile-runtime/RuntimeReconciliationPanel';
@@ -53,6 +54,7 @@ export function ProjectDetailPage() {
       </header>
 
       <PreviewAccessPanel runtime={runtime.data} />
+      <PublicRoutePanel projectId={projectId} />
 
       {project.data.status === 'DRAFT' ? (
         <section className="setup-banner">

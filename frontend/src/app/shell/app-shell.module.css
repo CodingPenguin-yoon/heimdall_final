@@ -165,6 +165,33 @@
   place-items: center;
 }
 
+.logoutButton {
+  min-height: 34px;
+  margin-left: 0.25rem;
+  padding: 0.45rem 0.65rem;
+  color: #475467;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  cursor: pointer;
+  background: var(--surface);
+  font-size: 0.69rem;
+  font-weight: 750;
+}
+
+.logoutButton:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+.logoutButton:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.logoutError {
+  color: var(--red) !important;
+  font-size: 0.68rem !important;
+}
+
 .content {
   width: min(1440px, 100%);
   margin-inline: auto;
@@ -195,8 +222,18 @@
   }
 
   .disabledLink,
-  .sidebarFooter,
+  .sidebarFooter {
+    display: none;
+  }
+
   .topbar {
+    min-height: 56px;
+    height: auto;
+    justify-content: flex-end;
+    padding: 0.55rem 1rem;
+  }
+
+  .breadcrumb {
     display: none;
   }
 }
@@ -208,5 +245,16 @@
 
   .navigation a {
     min-height: 38px;
+  }
+
+  .admin {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .logoutError {
+    width: 100%;
+    text-align: right;
   }
 }

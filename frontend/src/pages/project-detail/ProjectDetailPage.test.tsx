@@ -11,6 +11,7 @@ import {
 import type { Deployment } from '@/entities/deployment/types';
 import { getProject } from '@/entities/project/api';
 import type { Project } from '@/entities/project/types';
+import { getPublicRoute } from '@/entities/public-route/api';
 import { getProjectRuntime } from '@/entities/runtime/api';
 
 import { ProjectDetailPage } from './ProjectDetailPage';
@@ -23,6 +24,12 @@ vi.mock('@/entities/deployment/api', () => ({
 
 vi.mock('@/entities/project/api', () => ({
   getProject: vi.fn(),
+}));
+
+vi.mock('@/entities/public-route/api', () => ({
+  getPublicRoute: vi.fn(),
+  savePublicRoute: vi.fn(),
+  disablePublicRoute: vi.fn(),
 }));
 
 vi.mock('@/entities/runtime/api', () => ({
@@ -82,6 +89,7 @@ describe('ProjectDetailPage deployment history', () => {
     vi.mocked(listDeployments).mockResolvedValue({ items: [deployment] });
     vi.mocked(listDeploymentEvents).mockResolvedValue({ items: [] });
     vi.mocked(subscribeDeploymentEvents).mockReturnValue(vi.fn());
+    vi.mocked(getPublicRoute).mockResolvedValue(null);
     vi.mocked(getProjectRuntime).mockResolvedValue({
       status: 'NOT_ACTIVE',
       previewPort: null,

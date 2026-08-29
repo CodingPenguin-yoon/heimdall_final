@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+import { mockAuthenticatedSession } from './support/auth';
+
 const projectId = 'b5fd8229-4b3f-4c41-8a85-42908bfa7db1';
 const deploymentId = '8a7d1b1a-1df0-4a75-af80-2cbc60b734b9';
 
@@ -85,6 +87,13 @@ async function mockProjectApi(
       });
       return;
     }
+    if (path === `/api/projects/${projectId}/public-route`) {
+      await route.fulfill({
+        status: 404,
+        json: { code: 'PUBLIC_ROUTE_NOT_FOUND', message: 'Public route was not found' },
+      });
+      return;
+    }
     if (path === `/api/projects/${projectId}/commits`) {
       await route.fulfill({ json: { items: [] } });
       return;
@@ -111,6 +120,7 @@ async function mockProjectApi(
 
 test('queues immediate safe reconciliation from the retained runtime panel', async ({ page }) => {
   const requests: Array<Record<string, unknown>> = [];
+  await mockAuthenticatedSession(page);
   await mockProjectApi(page, 'RETAINED', requests);
 
   await page.goto(`/projects/${projectId}`);
@@ -124,6 +134,7 @@ test('queues immediate safe reconciliation from the retained runtime panel', asy
 
 test('requires the full deployment ID before forced cleanup', async ({ page }) => {
   const requests: Array<Record<string, unknown>> = [];
+  await mockAuthenticatedSession(page);
   await mockProjectApi(page, 'BLOCKED', requests);
   await page.goto(`/projects/${projectId}`);
   const forceButton = page.getByRole('button', { name: '보존 자원 강제 정리' });

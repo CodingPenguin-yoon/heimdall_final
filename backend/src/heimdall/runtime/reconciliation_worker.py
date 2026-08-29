@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
@@ -76,6 +77,7 @@ class RuntimeReconciliationWorker:
         max_attempts: int = 3,
         retry_base_delay: timedelta = timedelta(seconds=5),
         diagnostic_retention: timedelta | None = None,
+        on_runtime_ready: Callable[[UUID], None] | None = None,
     ) -> None:
         if not worker_id or len(worker_id) > 128:
             raise ValueError("worker_id must be between 1 and 128 characters")
@@ -96,6 +98,7 @@ class RuntimeReconciliationWorker:
         self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
         self._diagnostic_retention = diagnostic_retention
+        self._on_runtime_ready = on_runtime_ready
 
     def run_once(self) -> bool:
         now = datetime.now(UTC)
@@ -119,7 +122,10 @@ class RuntimeReconciliationWorker:
             disposition = self._processor.recover(deployment, progress)
             if disposition is RecoveryDisposition.ACTIVE:
                 progress.heartbeat()
-                self._deployments.reconcile_succeeded(deployment.id)
+                reconciled = self._deployments.reconcile_succeeded(deployment.id)
+                if self._on_runtime_ready is not None:
+                    with suppress(Exception):
+                        self._on_runtime_ready(reconciled.project_id)
                 self._repository.resolve(
                     claim,
                     ReconciliationResult.ACTIVE,

@@ -1,0 +1,68 @@
+.page,
+.status,
+:global(.auth-status-page) {
+  display: grid;
+  min-height: 100vh;
+  padding: 1.25rem;
+  background:
+    radial-gradient(circle at 15% 10%, rgb(36 107 253 / 10%), transparent 32rem), var(--canvas);
+  place-items: center;
+}
+
+.status {
+  color: var(--text-soft);
+}
+
+.card,
+:global(.auth-status-page) {
+  width: min(430px, 100%);
+  padding: clamp(1.4rem, 5vw, 2.25rem);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+:global(.auth-status-page) {
+  align-content: center;
+  justify-items: start;
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.heading h1,
+.card > h1 {
+  margin-bottom: 0;
+  font-size: 1.65rem;
+}
+
+.mark {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  color: #fff;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #2b73ff, #1555d7);
+  box-shadow: 0 7px 16px rgb(36 107 253 / 22%);
+  font-weight: 900;
+  place-items: center;
+}
+
+.intro,
+.card > p,
+:global(.auth-status-page) p {
+  margin: 1rem 0 1.4rem;
+  color: var(--text-soft);
+  font-size: 0.86rem;
+  line-height: 1.6;
+}
+
+.form {
+  display: grid;
+  gap: 1rem;
+}

@@ -16,9 +16,12 @@ from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
+from heimdall.public_routes.repository import PostgresPublicRouteRepository
+from heimdall.public_routes.service import PublicRouteService
 from heimdall.runtime.deployment_diagnostics import DockerDeploymentDiagnosticCollector
 from heimdall.runtime.docker import DockerRuntime, HttpHealthProbe
 from heimdall.runtime.docker_logs import DockerServiceLogReader, DockerServiceLogStreamer
+from heimdall.runtime.edge_network import DockerEdgeNetworkConnector
 from heimdall.runtime.gateway import NginxGatewayActivator
 from heimdall.runtime.gateway_probe import HttpRouteProbe
 from heimdall.runtime.log_broker import UnixServiceLogBrokerServer, service_log_socket_path
@@ -58,6 +61,12 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
         projects = ProjectService(PostgresProjectRepository(database), git, secret_store)
         deployments = PostgresDeploymentRepository(database)
         deployment_service = DeploymentService(deployments, projects)
+        public_routes = PublicRouteService(
+            PostgresPublicRouteRepository(database),
+            projects,
+            app_settings.deployment_base_domain,
+            app_settings.reserved_public_subdomains,
+        )
         runtimes = PostgresRuntimeRepository(database)
         docker = DockerRuntime(
             runner,
@@ -131,6 +140,12 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             image=app_settings.nginx_image,
             command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
             probe_host=app_settings.runtime_probe_host,
+            edge_network_connector=DockerEdgeNetworkConnector(
+                runner,
+                executable=app_settings.docker_executable,
+                network_name=app_settings.edge_network_name,
+                command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
+            ),
         )
         processor = DockerDeploymentProcessor(
             projects,
@@ -150,6 +165,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             lease_duration=lease_duration,
             max_attempts=app_settings.worker_max_attempts,
             diagnostic_retention=timedelta(days=app_settings.diagnostic_retention_days),
+            on_runtime_ready=public_routes.wake_pending_for_runtime,
         )
         reconciliation_worker = RuntimeReconciliationWorker(
             PostgresRuntimeReconciliationRepository(database),
@@ -160,6 +176,7 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             retention_duration=timedelta(hours=app_settings.runtime_retention_hours),
             max_attempts=app_settings.worker_max_attempts,
             diagnostic_retention=timedelta(days=app_settings.diagnostic_retention_days),
+            on_runtime_ready=public_routes.wake_pending_for_runtime,
         )
         while not stop_event.is_set():
             if worker.run_once():
