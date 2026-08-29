@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from heimdall.common.api_model import ApiModel
-from heimdall.projects.models import Project, ProjectStatus
+from heimdall.projects.models import Project, ProjectDeletionJob, ProjectStatus
 
 SERVICE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
@@ -41,6 +41,32 @@ class ProjectCreate(ApiModel):
         if not stripped:
             raise ValueError("must not be blank")
         return stripped
+
+
+class ProjectDeletionRequest(ApiModel):
+    confirmation: Annotated[str, Field(min_length=36, max_length=36)]
+    delete_managed_database: bool = False
+    managed_database_confirmation: Annotated[str, Field(max_length=128)] | None = None
+
+
+class ProjectDeletionRead(ApiModel):
+    project_id: UUID
+    state: str
+    phase: str
+    attempts: int
+    available_at: datetime
+    last_error_code: str | None
+    last_error_retryable: bool | None
+    delete_managed_database: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_job(cls, job: ProjectDeletionJob) -> ProjectDeletionRead:
+        values = asdict(job)
+        for internal in ("lease_owner", "lease_expires_at", "claim_token"):
+            values.pop(internal)
+        return cls(**values)
 
 
 class ServiceBuild(ApiModel):
@@ -181,6 +207,7 @@ class ProjectRead(ApiModel):
     deployment_config: dict | None
     created_at: datetime
     updated_at: datetime
+    has_managed_database: bool
 
     @classmethod
     def from_project(cls, project: Project) -> ProjectRead:

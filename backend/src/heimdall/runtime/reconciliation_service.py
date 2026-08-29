@@ -10,6 +10,7 @@ from heimdall.deployments.service import DeploymentService
 from heimdall.runtime.reconciliation import (
     ReconciliationAction,
     ReconciliationInProgressError,
+    ReconciliationProjectDeletingError,
     ReconciliationRequester,
     ReconciliationResult,
     RuntimeReconciliation,
@@ -96,6 +97,8 @@ class RuntimeReconciliationService:
                 "RUNTIME_RECONCILIATION_IN_PROGRESS",
                 "Wait for the current runtime reconciliation to finish",
             ) from error
+        except ReconciliationProjectDeletingError as error:
+            raise AppError(409, "PROJECT_DELETING", "Project deletion is in progress") from error
         return _view(item)
 
     @staticmethod

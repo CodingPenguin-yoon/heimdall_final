@@ -8,6 +8,7 @@ from heimdall.public_routes.models import (
     PublicRoute,
     PublicRouteConflictError,
     PublicRouteNotFoundError,
+    PublicRouteProjectDeletingError,
 )
 from heimdall.public_routes.repository import PublicRouteRepository
 from heimdall.public_routes.schemas import PublicRouteUpdate
@@ -60,6 +61,8 @@ class PublicRouteService:
                 "PUBLIC_HOSTNAME_CONFLICT",
                 "The requested public hostname is already reserved",
             ) from error
+        except PublicRouteProjectDeletingError as error:
+            raise AppError(409, "PROJECT_DELETING", "Project deletion is in progress") from error
 
     def disable(self, project_id: UUID) -> PublicRoute:
         self._projects.get(project_id)
@@ -71,6 +74,14 @@ class PublicRouteService:
                 "PUBLIC_ROUTE_NOT_FOUND",
                 "The project does not have a public hostname",
             ) from error
+        except PublicRouteProjectDeletingError as error:
+            raise AppError(409, "PROJECT_DELETING", "Project deletion is in progress") from error
 
     def wake_pending_for_runtime(self, project_id: UUID) -> None:
         self._repository.wake_pending(project_id)
+
+    def disable_for_deletion(self, project_id: UUID) -> PublicRoute | None:
+        return self._repository.disable_for_deletion(project_id)
+
+    def deletion_is_applied(self, project_id: UUID) -> bool:
+        return self._repository.deletion_is_applied(project_id)

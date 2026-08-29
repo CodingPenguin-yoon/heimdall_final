@@ -6,6 +6,7 @@ import signal
 import socket
 from datetime import timedelta
 from threading import Event
+from typing import Protocol
 
 from heimdall.config import Settings
 from heimdall.database import Database
@@ -14,6 +15,12 @@ from heimdall.deployments.repository import PostgresDeploymentRepository
 from heimdall.deployments.service import DeploymentService
 from heimdall.deployments.worker import DeploymentWorker
 from heimdall.git.client import GitClient
+from heimdall.project_database.provisioner import PostgresProjectDatabaseProvisioner
+from heimdall.project_database.repository import PostgresProjectDatabaseRepository
+from heimdall.projects.deletion_worker import (
+    ProjectDatabaseDeletionAdapter,
+    ProjectDeletionWorker,
+)
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
 from heimdall.public_routes.repository import PostgresPublicRouteRepository
@@ -32,6 +39,7 @@ from heimdall.runtime.log_stream_broker import (
 from heimdall.runtime.logs import ServiceLogError
 from heimdall.runtime.process import SubprocessCommandRunner
 from heimdall.runtime.process_stream import SubprocessCommandStreamRunner
+from heimdall.runtime.project_teardown import ProjectRuntimeTeardown
 from heimdall.runtime.reconciliation_repository import PostgresRuntimeReconciliationRepository
 from heimdall.runtime.reconciliation_worker import RuntimeReconciliationWorker
 from heimdall.runtime.repository import PostgresRuntimeRepository
@@ -39,6 +47,22 @@ from heimdall.runtime.service import DockerDeploymentProcessor
 from heimdall.secrets.store import FileSecretStore
 
 logger = logging.getLogger(__name__)
+
+
+class _Worker(Protocol):
+    def run_once(self) -> bool: ...
+
+
+def _run_workers_once(
+    deletion: _Worker,
+    deployment: _Worker,
+    reconciliation: _Worker,
+) -> bool:
+    if deletion.run_once():
+        return True
+    if deployment.run_once():
+        return True
+    return reconciliation.run_once()
 
 
 def run(settings: Settings | None = None, stop: Event | None = None) -> None:
@@ -58,7 +82,8 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             timeout_seconds=app_settings.git_timeout_seconds,
             recent_commit_limit=app_settings.recent_commit_limit,
         )
-        projects = ProjectService(PostgresProjectRepository(database), git, secret_store)
+        project_repository = PostgresProjectRepository(database)
+        projects = ProjectService(project_repository, git, secret_store)
         deployments = PostgresDeploymentRepository(database)
         deployment_service = DeploymentService(deployments, projects)
         public_routes = PublicRouteService(
@@ -178,10 +203,37 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
             diagnostic_retention=timedelta(days=app_settings.diagnostic_retention_days),
             on_runtime_ready=public_routes.wake_pending_for_runtime,
         )
+        project_database_repository = PostgresProjectDatabaseRepository(database)
+        project_database_provisioner = (
+            PostgresProjectDatabaseProvisioner(app_settings.project_database_admin_url)
+            if app_settings.project_database_enabled
+            and app_settings.project_database_admin_url is not None
+            else None
+        )
+        if project_database_provisioner is not None:
+            project_database_provisioner.preflight_deletion()
+        deletion_worker = ProjectDeletionWorker(
+            project_repository,
+            public_routes,
+            ProjectRuntimeTeardown(
+                runner,
+                app_settings.git_workspace_root,
+                app_settings.runtime_root / "gateways",
+                docker_executable=app_settings.docker_executable,
+                command_timeout_seconds=app_settings.runtime_command_timeout_seconds,
+            ),
+            secret_store,
+            ProjectDatabaseDeletionAdapter(
+                project_database_repository,
+                project_database_provisioner,
+            ),
+            worker_id=worker_id,
+            lease_duration=lease_duration,
+            max_attempts=app_settings.worker_max_attempts,
+            retry_base_delay=timedelta(seconds=1),
+        )
         while not stop_event.is_set():
-            if worker.run_once():
-                continue
-            if not reconciliation_worker.run_once():
+            if not _run_workers_once(deletion_worker, worker, reconciliation_worker):
                 stop_event.wait(app_settings.worker_poll_seconds)
     finally:
         if log_stream_broker is not None:

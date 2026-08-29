@@ -60,7 +60,7 @@
   rejects direct overlap with runtime, Git workspace, and Edge config roots; both Workers, frontend,
   Edge, Managed DB, and application containers receive neither auth key nor the mount.
 - 저장소 등록과 배포 설정을 분리한다.
-- 프로젝트는 `DRAFT` 또는 `READY` 상태다.
+- 프로젝트는 `DRAFT`, `READY` 또는 삭제 mutation을 차단하는 `DELETING` 상태다.
 - 설정은 Heimdall DB가 원본이며 저장소에 전용 YAML을 요구하지 않는다.
 - 배포는 `main` 최신 commit 또는 최근 목록에서 선택한 commit만 허용한다.
 - 배포마다 source를 다시 build하며 image registry와 즉시 image rollback은 초기 비범위다.
@@ -75,6 +75,17 @@
   generation을 확정하고, 불확실한 candidate는 삭제하지 않으며 attempt 상한을 적용한다.
 - Docker resource는 project·deployment label과 deterministic generation name을 사용한다.
 - cleanup은 label과 deployment ID가 일치하는 candidate와 이전 generation만 대상으로 한다.
+- Project deletion API는 intent와 durable job만 기록한다. Docker socket과 runtime root를 가진 Worker가
+  Edge hostname 제거 확인, Project Gateway, exact-label container·network·image, workspace·gateway
+  config, project secret, 확인된 Managed PostgreSQL database·role 순으로 제거한 뒤 마지막 Control DB
+  transaction에서 child metadata와 project row를 삭제한다.
+- deletion claim token·lease와 phase가 stale Worker의 mutation/finalize를 fence한다. 이름만 일치하거나
+  marker·label·filesystem identity가 불확실한 resource는 자동 삭제하지 않고 project와 job metadata를
+  보존한다. Shared Edge container·network와 다른 project resource는 deletion 대상이 아니다.
+- Managed DB 삭제가 활성화된 Worker는 시작 시 provisioner의 `CREATEDB`, `CREATEROLE`과
+  `pg_signal_backend`의 `SET` privilege를 확인한다. session 종료 구간에서만 predefined role을
+  활성화하고 반드시 reset한다. 권한이 부족하면 삭제 Worker를 포함한 process가 fail-fast하며 database
+  session 종료나 drop을 시도하지 않는다.
 - 불확실한 failed candidate는 설정된 기간 동안 보존하고 durable reconciliation Worker가
   재확인한다. 자동 경로는 안전 판정이 없으면 삭제하지 않으며 관리자 force cleanup은 전체
   deployment ID 확인과 DB active guard를 요구한다.

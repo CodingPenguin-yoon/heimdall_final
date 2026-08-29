@@ -5,6 +5,7 @@ from uuid import UUID
 from heimdall.common.errors import AppError
 from heimdall.project_database.models import (
     ProjectDatabasePhase,
+    ProjectDatabaseProjectDeletingError,
     ProjectDatabaseProvisioningError,
     ProjectDatabaseResource,
     ProjectDatabaseStatus,
@@ -65,14 +66,21 @@ class ProjectDatabaseService:
                 "Managed project PostgreSQL is not configured",
             )
 
-        resource = self._repository.ensure_intent(project_id)
-        if resource.status is ProjectDatabaseStatus.ACTIVE:
-            return self._read(resource, connected_services)
-        if resource.status is ProjectDatabaseStatus.FAILED:
-            resource = self._repository.begin_retry(resource)
-
         try:
-            resource = self._reconcile(resource)
+            resource = self._repository.ensure_intent(project_id)
+        except ProjectDatabaseProjectDeletingError as error:
+            raise AppError(409, "PROJECT_DELETING", "Project deletion is in progress") from error
+        try:
+            with (
+                self._provisioner.operation_lock(resource.id),
+                self._projects.locked_ready(project_id) as project,
+            ):
+                connected_services = _connected_services(project)
+                if resource.status is ProjectDatabaseStatus.ACTIVE:
+                    return self._read(resource, connected_services)
+                if resource.status is ProjectDatabaseStatus.FAILED:
+                    resource = self._repository.begin_retry(resource)
+                resource = self._reconcile(resource)
         except ProjectDatabaseVersionConflict as error:
             raise AppError(
                 409,

@@ -1,4 +1,25 @@
-export type ProjectStatus = 'DRAFT' | 'READY';
+export type ProjectStatus = 'DRAFT' | 'READY' | 'DELETING';
+
+export type ProjectDeletionState = 'PENDING' | 'CLAIMED' | 'FAILED';
+
+export interface ProjectDeletion {
+  projectId: string;
+  state: ProjectDeletionState;
+  phase: string;
+  attempts: number;
+  availableAt: string;
+  lastErrorCode: string | null;
+  lastErrorRetryable: boolean | null;
+  deleteManagedDatabase: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectDeletionRequest {
+  confirmation: string;
+  deleteManagedDatabase: boolean;
+  managedDatabaseConfirmation: string | null;
+}
 
 export interface EnvironmentVariable {
   name: string;
@@ -32,6 +53,7 @@ export interface Project {
   repositoryUrl: string;
   branch: 'main';
   status: ProjectStatus;
+  hasManagedDatabase: boolean;
   configVersion: number;
   deploymentConfig: DeploymentConfig | null;
   createdAt: string;

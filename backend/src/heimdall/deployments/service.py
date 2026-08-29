@@ -22,6 +22,7 @@ from heimdall.deployments.models import (
     Deployment,
     DeploymentEvent,
     DeploymentNotFoundError,
+    DeploymentProjectDeletingError,
     DeploymentReconciliationConflictError,
     DeploymentSource,
 )
@@ -178,6 +179,8 @@ class DeploymentService:
             raise AppError(
                 409, "ACTIVE_DEPLOYMENT_EXISTS", "Wait for the active deployment to finish"
             ) from error
+        except DeploymentProjectDeletingError as error:
+            raise AppError(409, "PROJECT_DELETING", "Project deletion is in progress") from error
 
     def list_for_project(self, project_id: UUID) -> Sequence[Deployment]:
         self._projects.get(project_id)

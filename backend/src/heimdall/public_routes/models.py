@@ -76,6 +76,11 @@ class PublicRouteConflictError(RuntimeError):
     pass
 
 
+class PublicRouteProjectDeletingError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("PROJECT_DELETING")
+
+
 class PublicRouteClaimLostError(RuntimeError):
     pass
 

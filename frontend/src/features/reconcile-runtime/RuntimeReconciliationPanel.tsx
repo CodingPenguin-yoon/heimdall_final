@@ -19,9 +19,11 @@ const stateLabels = {
 export function RuntimeReconciliationPanel({
   deployment,
   projectId,
+  disabled = false,
 }: {
   deployment: Deployment;
   projectId: string;
+  disabled?: boolean;
 }) {
   const queryClient = useQueryClient();
   const reconciliation = useQuery(runtimeReconciliationQuery(deployment.id));
@@ -53,7 +55,8 @@ export function RuntimeReconciliationPanel({
         ? reconciliation.error.message
         : null;
   const item = reconciliation.data;
-  const busy = mutation.isPending || item?.state === 'PENDING' || item?.state === 'CLAIMED';
+  const busy =
+    disabled || mutation.isPending || item?.state === 'PENDING' || item?.state === 'CLAIMED';
 
   return (
     <div className="runtime-reconciliation">
@@ -93,6 +96,7 @@ export function RuntimeReconciliationPanel({
             <input
               aria-label="강제 정리 확인 Deployment ID"
               value={confirmation}
+              disabled={disabled}
               placeholder={deployment.id}
               onChange={(event) => setConfirmation(event.target.value)}
             />

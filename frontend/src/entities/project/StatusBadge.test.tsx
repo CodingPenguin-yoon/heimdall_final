@@ -15,4 +15,10 @@ describe('StatusBadge', () => {
 
     expect(screen.getByText('Ready')).toBeVisible();
   });
+
+  it('shows projects locked for deletion', () => {
+    render(<StatusBadge status="DELETING" />);
+
+    expect(screen.getByText('Deleting')).toBeVisible();
+  });
 });

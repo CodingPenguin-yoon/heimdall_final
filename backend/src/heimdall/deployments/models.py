@@ -73,3 +73,8 @@ class DeploymentClaimLostError(RuntimeError):
 
 class DeploymentReconciliationConflictError(RuntimeError):
     pass
+
+
+class DeploymentProjectDeletingError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("PROJECT_DELETING")

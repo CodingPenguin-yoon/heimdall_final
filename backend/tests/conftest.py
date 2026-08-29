@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,19 @@ class MemorySecretStore:
 
     def resolve(self, reference: str, fingerprint: str) -> Path:
         raise NotImplementedError
+
+    @contextmanager
+    def project_operation_lock(self, _project_id: UUID, *, blocking: bool = True):
+        assert blocking is True
+        yield
+
+    def delete_project_subtree(self, project_id: UUID) -> None:
+        prefix = f"projects/{project_id}/"
+        self.items = {
+            reference: value
+            for reference, value in self.items.items()
+            if not reference.startswith(prefix)
+        }
 
 
 class FakeGit:
@@ -88,6 +102,10 @@ class MemoryProjects:
 
     def get(self, project_id: UUID) -> Project:
         return self.items[project_id]
+
+    @contextmanager
+    def lock_for_external_operation(self, project_id: UUID):
+        yield self.get(project_id)
 
     def get_environment_secret(
         self, project_id: UUID, service_name: str, variable_name: str

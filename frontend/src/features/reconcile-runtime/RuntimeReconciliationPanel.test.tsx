@@ -41,11 +41,15 @@ const retained: RuntimeReconciliation = {
   completedAt: null,
 };
 
-function renderPanel() {
+function renderPanel(disabled = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <RuntimeReconciliationPanel deployment={deployment} projectId="project-1" />
+      <RuntimeReconciliationPanel
+        deployment={deployment}
+        projectId="project-1"
+        disabled={disabled}
+      />
     </QueryClientProvider>,
   );
 }
@@ -112,5 +116,13 @@ describe('RuntimeReconciliationPanel', () => {
     expect(await screen.findByText('처리 완료')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '지금 안전 확인' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '보존 자원 강제 정리' })).not.toBeInTheDocument();
+  });
+
+  it('disables reconciliation mutations while the project is deleting', async () => {
+    renderPanel(true);
+
+    expect(await screen.findByRole('button', { name: '지금 안전 확인' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '보존 자원 강제 정리' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: '강제 정리 확인 Deployment ID' })).toBeDisabled();
   });
 });

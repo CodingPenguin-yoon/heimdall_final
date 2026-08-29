@@ -1,11 +1,12 @@
 import { queryOptions } from '@tanstack/react-query';
 
-import { getProject, listCommits, listProjects } from './api';
+import { getProject, getProjectDeletion, listCommits, listProjects } from './api';
 
 export const projectKeys = {
   all: ['projects'] as const,
   detail: (projectId: string) => ['projects', projectId] as const,
   commits: (projectId: string) => ['projects', projectId, 'commits'] as const,
+  deletion: (projectId: string) => ['projects', projectId, 'deletion'] as const,
 };
 
 export const projectsQuery = () =>
@@ -19,4 +20,14 @@ export const commitsQuery = (projectId: string) =>
     queryKey: projectKeys.commits(projectId),
     queryFn: () => listCommits(projectId),
     enabled: Boolean(projectId),
+  });
+
+export const projectDeletionQuery = (projectId: string, enabled: boolean) =>
+  queryOptions({
+    queryKey: projectKeys.deletion(projectId),
+    queryFn: () => getProjectDeletion(projectId),
+    enabled: Boolean(projectId) && enabled,
+    retry: false,
+    refetchInterval: (query) =>
+      ['PENDING', 'CLAIMED'].includes(query.state.data?.state ?? '') ? 1_000 : false,
   });

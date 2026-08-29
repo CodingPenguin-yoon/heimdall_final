@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -107,20 +108,35 @@ class MemoryProjectDatabaseRepository:
 
 
 class FakeProvisioner:
-    def __init__(self) -> None:
+    def __init__(self, project_lock_active=lambda: True) -> None:
         self.steps: list[str] = []
+        self.locked = False
+        self.project_lock_active = project_lock_active
+
+    @contextmanager
+    def operation_lock(self, _resource_id: UUID):
+        self.locked = True
+        try:
+            yield
+        finally:
+            self.locked = False
 
     def ensure_role(self, _: UUID, __: str, password: str) -> None:
+        assert self.locked
+        assert self.project_lock_active()
         assert password == "generated-secret-v1"
         self.steps.append("role")
 
     def ensure_database(self, _: UUID, __: str) -> None:
+        assert self.locked
         self.steps.append("database")
 
     def ensure_privileges(self, _: str, __: str, ___: str) -> None:
+        assert self.locked
         self.steps.append("privileges")
 
     def verify_login(self, _: str, __: str, ___: str, password: str) -> None:
+        assert self.locked
         assert password == "generated-secret-v1"
         self.steps.append("login")
 
@@ -156,3 +172,38 @@ def test_project_database_is_provisioned_to_active_without_returning_password() 
     assert result.host == "managed-db.internal"
     assert provisioner.steps == ["role", "database", "privileges", "login"]
     assert "password" not in result.model_dump_json().lower()
+
+
+def test_project_row_lock_is_held_across_external_database_reconcile() -> None:
+    class LockingProjects(MemoryProjects):
+        def __init__(self) -> None:
+            super().__init__()
+            self.external_lock_active = False
+
+        @contextmanager
+        def lock_for_external_operation(self, project_id: UUID):
+            self.external_lock_active = True
+            try:
+                yield self.get(project_id)
+            finally:
+                self.external_lock_active = False
+
+    repository = LockingProjects()
+    projects = ProjectService(repository, FakeGit())
+    project = projects.create(
+        ProjectCreate(name="Locked", repositoryUrl="https://github.com/example/locked")
+    )
+    payload = valid_settings()
+    payload["services"][1]["projectDatabaseAccess"] = True
+    project = projects.update_settings(project.id, ProjectSettingsUpdate.model_validate(payload))
+    provisioner = FakeProvisioner(lambda: repository.external_lock_active)
+    service = ProjectDatabaseService(
+        MemoryProjectDatabaseRepository(),
+        projects,
+        MemorySecretStore(),
+        provisioner,
+        "managed-db.internal",
+        5432,
+    )
+
+    service.provision(project.id)

@@ -4,6 +4,8 @@ import base64
 import hashlib
 import hmac
 import secrets
+from collections.abc import Iterator
+from contextlib import contextmanager
 from uuid import UUID, uuid4
 
 import psycopg
@@ -16,6 +18,215 @@ from heimdall.project_database.models import ProjectDatabaseProvisioningError
 class PostgresProjectDatabaseProvisioner:
     def __init__(self, admin_url: str) -> None:
         self._admin_url = admin_url
+
+    def preflight_deletion(self) -> None:
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                privileges = connection.execute(
+                    """
+                    SELECT current_user,
+                           role.rolsuper OR role.rolcreatedb,
+                           role.rolsuper OR role.rolcreaterole,
+                           role.rolsuper OR pg_has_role(
+                               current_user, 'pg_signal_backend', 'SET'
+                           )
+                    FROM pg_roles AS role
+                    WHERE role.rolname = current_user
+                    """
+                ).fetchone()
+                if privileges is None or not all(privileges[1:]):
+                    raise ProjectDatabaseProvisioningError("DELETE", "PREFLIGHT_PRIVILEGES_MISSING")
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError("DELETE", "PREFLIGHT_FAILED") from error
+
+    @contextmanager
+    def operation_lock(self, resource_id: UUID, *, blocking: bool = True) -> Iterator[None]:
+        key = _advisory_key(resource_id)
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                if blocking:
+                    connection.execute("SELECT pg_advisory_lock(%s)", (key,))
+                else:
+                    acquired = connection.execute(
+                        "SELECT pg_try_advisory_lock(%s)", (key,)
+                    ).fetchone()
+                    if acquired is None or acquired[0] is not True:
+                        raise ProjectDatabaseProvisioningError("DELETE", "OPERATION_LOCK_BUSY")
+                try:
+                    yield
+                finally:
+                    connection.execute("SELECT pg_advisory_unlock(%s)", (key,))
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError("DELETE", "OPERATION_LOCK_FAILED") from error
+
+    def quiesce(self, resource_id: UUID, database_name: str, role_name: str) -> None:
+        marker = _marker(resource_id)
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                role = connection.execute(
+                    """
+                    SELECT rolname, shobj_description(oid, 'pg_authid') AS marker
+                    FROM pg_roles WHERE rolname = %s
+                    """,
+                    (role_name,),
+                ).fetchone()
+                if role is not None and role[1] != marker:
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                database = connection.execute(
+                    """
+                    SELECT pg_get_userbyid(datdba) AS owner,
+                           shobj_description(oid, 'pg_database') AS marker,
+                           current_user AS expected_owner
+                    FROM pg_database WHERE datname = %s
+                    """,
+                    (database_name,),
+                ).fetchone()
+                if database is not None and (database[0] != database[2] or database[1] != marker):
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                if role is not None:
+                    connection.execute(
+                        sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(role_name))
+                    )
+                connection.execute("SET ROLE pg_signal_backend")
+                try:
+                    connection.execute(
+                        """
+                        SELECT pg_terminate_backend(pid)
+                        FROM pg_stat_activity
+                        WHERE pid <> pg_backend_pid() AND (datname = %s OR usename = %s)
+                        """,
+                        (database_name, role_name),
+                    )
+                finally:
+                    connection.execute("RESET ROLE")
+                remaining = connection.execute(
+                    """
+                    SELECT count(*) FROM pg_stat_activity
+                    WHERE pid <> pg_backend_pid() AND (datname = %s OR usename = %s)
+                    """,
+                    (database_name, role_name),
+                ).fetchone()
+                if remaining is None or remaining[0] != 0:
+                    raise ProjectDatabaseProvisioningError("DELETE", "SESSIONS_ACTIVE")
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError("DELETE", "QUIESCE_FAILED") from error
+
+    def drop_database(self, resource_id: UUID, database_name: str) -> None:
+        marker = _marker(resource_id)
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                database = connection.execute(
+                    """
+                    SELECT pg_get_userbyid(datdba) AS owner,
+                           shobj_description(oid, 'pg_database') AS marker,
+                           current_user AS expected_owner
+                    FROM pg_database WHERE datname = %s
+                    """,
+                    (database_name,),
+                ).fetchone()
+                if database is None:
+                    return
+                if database[0] != database[2] or database[1] != marker:
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                connection.execute(
+                    sql.SQL("DROP DATABASE {}").format(sql.Identifier(database_name))
+                )
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM pg_database WHERE datname = %s", (database_name,)
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ProjectDatabaseProvisioningError("DELETE", "DATABASE_DROP_UNCONFIRMED")
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError("DELETE", "DATABASE_DROP_FAILED") from error
+
+    def drop_role(self, resource_id: UUID, role_name: str) -> None:
+        marker = _marker(resource_id)
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                role = connection.execute(
+                    """
+                    SELECT rolname, shobj_description(oid, 'pg_authid') AS marker
+                    FROM pg_roles WHERE rolname = %s
+                    """,
+                    (role_name,),
+                ).fetchone()
+                if role is None:
+                    return
+                if role[1] != marker:
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                connection.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role_name)))
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM pg_roles WHERE rolname = %s", (role_name,)
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ProjectDatabaseProvisioningError("DELETE", "ROLE_DROP_UNCONFIRMED")
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError("DELETE", "ROLE_DROP_FAILED") from error
+
+    def verify_absent(self, resource_id: UUID, database_name: str, role_name: str) -> None:
+        marker = _marker(resource_id)
+        try:
+            with psycopg.connect(
+                self._admin_url, autocommit=True, connect_timeout=10
+            ) as connection:
+                _configure_timeouts(connection)
+                database = connection.execute(
+                    """
+                    SELECT pg_get_userbyid(datdba),
+                           shobj_description(oid, 'pg_database'),
+                           current_user
+                    FROM pg_database WHERE datname = %s
+                    """,
+                    (database_name,),
+                ).fetchone()
+                role = connection.execute(
+                    """
+                    SELECT shobj_description(oid, 'pg_authid')
+                    FROM pg_roles WHERE rolname = %s
+                    """,
+                    (role_name,),
+                ).fetchone()
+                if database is not None and (database[0] != database[2] or database[1] != marker):
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                if role is not None and role[0] != marker:
+                    raise ProjectDatabaseProvisioningError("DELETE", "OWNERSHIP_CONFLICT")
+                if database is not None or role is not None:
+                    raise ProjectDatabaseProvisioningError("DELETE", "RESOURCES_REAPPEARED")
+        except ProjectDatabaseProvisioningError:
+            raise
+        except psycopg.Error as error:
+            raise ProjectDatabaseProvisioningError(
+                "DELETE", "ABSENCE_VERIFICATION_FAILED"
+            ) from error
 
     def ensure_role(self, resource_id: UUID, role_name: str, password: str) -> None:
         marker = _marker(resource_id)
@@ -144,6 +355,16 @@ class PostgresProjectDatabaseProvisioner:
 
 def _marker(resource_id: UUID) -> str:
     return f"heimdall-project-database:{resource_id}"
+
+
+def _advisory_key(resource_id: UUID) -> int:
+    digest = hashlib.sha256(resource_id.bytes).digest()
+    return int.from_bytes(digest[:8], byteorder="big", signed=True)
+
+
+def _configure_timeouts(connection) -> None:
+    connection.execute("SET statement_timeout = '10s'")
+    connection.execute("SET lock_timeout = '5s'")
 
 
 def _target_url(admin_url: str, database_name: str, **overrides: str) -> str:

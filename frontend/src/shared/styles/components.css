@@ -134,6 +134,15 @@
   background: #e98a15;
 }
 
+.status-deleting {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.status-deleting > span {
+  background: var(--red);
+}
+
 .branch-chip {
   color: #475467;
   border: 1px solid var(--border);

@@ -19,6 +19,7 @@ const project: Project = {
   repositoryUrl: 'https://github.com/example/project',
   branch: 'main',
   status: 'READY',
+  hasManagedDatabase: false,
   configVersion: 3,
   deploymentConfig: {
     services: [
@@ -131,5 +132,12 @@ describe('ProjectSettingsForm', () => {
         ],
       }),
     );
+  });
+
+  it('disables settings mutations while the project is deleting', () => {
+    renderForm({ ...project, status: 'DELETING' });
+
+    expect(screen.getByRole('button', { name: '설정 저장' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: '서비스 이름' })).toBeDisabled();
   });
 });

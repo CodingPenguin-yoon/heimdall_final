@@ -15,6 +15,7 @@ from heimdall.public_routes.models import (
     PublicRouteDesiredState,
     PublicRouteJobClaim,
     PublicRouteNotFoundError,
+    PublicRouteProjectDeletingError,
     PublicRouteStatus,
 )
 
@@ -27,6 +28,10 @@ class PublicRouteRepository(Protocol):
     def set_enabled(self, project_id: UUID, subdomain: str, hostname: str) -> PublicRoute: ...
 
     def disable(self, project_id: UUID) -> PublicRoute: ...
+
+    def disable_for_deletion(self, project_id: UUID) -> PublicRoute | None: ...
+
+    def deletion_is_applied(self, project_id: UUID) -> bool: ...
 
     def list_applied(self) -> Sequence[PublicRoute]: ...
 
@@ -69,6 +74,7 @@ class PostgresPublicRouteRepository:
         now = datetime.now(UTC)
         try:
             with self._database.connection() as connection:
+                self._lock_project_mutation(connection, project_id)
                 self._lock_hostname_claims(connection)
                 current = connection.execute(
                     "SELECT * FROM project_public_routes WHERE project_id = %s FOR UPDATE",
@@ -125,6 +131,7 @@ class PostgresPublicRouteRepository:
     def disable(self, project_id: UUID) -> PublicRoute:
         now = datetime.now(UTC)
         with self._database.connection() as connection:
+            self._lock_project_mutation(connection, project_id)
             self._lock_hostname_claims(connection)
             current = connection.execute(
                 "SELECT * FROM project_public_routes WHERE project_id = %s FOR UPDATE",
@@ -155,6 +162,69 @@ class PostgresPublicRouteRepository:
             ).fetchone()
             self._upsert_job(connection, project_id, revision, now)
         return _route(row)
+
+    def disable_for_deletion(self, project_id: UUID) -> PublicRoute | None:
+        now = datetime.now(UTC)
+        with self._database.connection() as connection:
+            project = connection.execute(
+                "SELECT status FROM projects WHERE id = %s FOR UPDATE", (project_id,)
+            ).fetchone()
+            if project is None or project["status"] != "DELETING":
+                raise PublicRouteProjectDeletingError
+            self._lock_hostname_claims(connection)
+            current = connection.execute(
+                "SELECT * FROM project_public_routes WHERE project_id = %s FOR UPDATE",
+                (project_id,),
+            ).fetchone()
+            if current is None:
+                return None
+            unchanged = current["desired_state"] == PublicRouteDesiredState.DISABLED.value
+            if unchanged and current["status"] in {
+                PublicRouteStatus.PENDING.value,
+                PublicRouteStatus.APPLYING.value,
+                PublicRouteStatus.INACTIVE.value,
+            }:
+                return _route(current)
+            revision = current["desired_revision"] if unchanged else current["desired_revision"] + 1
+            row = connection.execute(
+                """
+                UPDATE project_public_routes
+                SET desired_state = 'DISABLED', status = 'PENDING',
+                    desired_revision = %s, last_error_code = NULL, updated_at = %s
+                WHERE project_id = %s
+                RETURNING *
+                """,
+                (revision, now, project_id),
+            ).fetchone()
+            self._upsert_job(connection, project_id, revision, now)
+        return _route(row)
+
+    def deletion_is_applied(self, project_id: UUID) -> bool:
+        with self._database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT NOT EXISTS (
+                    SELECT 1 FROM project_public_routes
+                    WHERE project_id = %s
+                      AND NOT (
+                        desired_state = 'DISABLED'
+                        AND status = 'INACTIVE'
+                        AND applied_revision = desired_revision
+                        AND applied_hostname IS NULL
+                      )
+                ) AS applied
+                """,
+                (project_id,),
+            ).fetchone()
+        return bool(row and row["applied"])
+
+    @staticmethod
+    def _lock_project_mutation(connection, project_id: UUID) -> None:
+        project = connection.execute(
+            "SELECT status FROM projects WHERE id = %s FOR UPDATE", (project_id,)
+        ).fetchone()
+        if project is not None and project["status"] == "DELETING":
+            raise PublicRouteProjectDeletingError
 
     def list_applied(self) -> Sequence[PublicRoute]:
         with self._database.connection() as connection:

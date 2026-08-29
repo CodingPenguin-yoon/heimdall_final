@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router';
 
 import { projectQuery } from '@/entities/project/queries';
 import { ProjectSettingsForm } from '@/features/configure-project/ProjectSettingsForm';
+import { ProjectDeletionPanel } from '@/features/delete-project/ProjectDeletionPanel';
 
 export function ProjectSettingsPage() {
   const { projectId = '' } = useParams();
@@ -27,6 +28,7 @@ export function ProjectSettingsPage() {
         <span className="config-version">Config version {project.data.configVersion}</span>
       </header>
       <ProjectSettingsForm project={project.data} />
+      <ProjectDeletionPanel project={project.data} />
     </div>
   );
 }

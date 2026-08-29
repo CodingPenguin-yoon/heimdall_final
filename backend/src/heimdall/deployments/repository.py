@@ -26,6 +26,7 @@ from heimdall.deployments.models import (
     DeploymentEvent,
     DeploymentJobClaim,
     DeploymentNotFoundError,
+    DeploymentProjectDeletingError,
     DeploymentReconciliationConflictError,
     DeploymentSource,
     DeploymentStatus,
@@ -132,6 +133,12 @@ class PostgresDeploymentRepository:
         now = datetime.now(UTC)
         try:
             with self._database.connection() as connection:
+                project = connection.execute(
+                    "SELECT status FROM projects WHERE id = %s FOR UPDATE",
+                    (project_id,),
+                ).fetchone()
+                if project is not None and project["status"] == "DELETING":
+                    raise DeploymentProjectDeletingError
                 row = connection.execute(
                     """
                     INSERT INTO deployments (

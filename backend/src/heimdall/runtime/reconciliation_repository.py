@@ -9,6 +9,7 @@ from heimdall.runtime.reconciliation import (
     ReconciliationAction,
     ReconciliationClaimLostError,
     ReconciliationInProgressError,
+    ReconciliationProjectDeletingError,
     ReconciliationRequester,
     ReconciliationResult,
     ReconciliationState,
@@ -37,6 +38,18 @@ class PostgresRuntimeReconciliationRepository:
     ) -> RuntimeReconciliation:
         now = datetime.now(UTC)
         with self._database.connection() as connection:
+            project = connection.execute(
+                """
+                SELECT project.status
+                FROM projects AS project
+                JOIN deployments AS deployment ON deployment.project_id = project.id
+                WHERE deployment.id = %s
+                FOR UPDATE OF project
+                """,
+                (deployment_id,),
+            ).fetchone()
+            if project is not None and project["status"] == "DELETING":
+                raise ReconciliationProjectDeletingError
             row = connection.execute(
                 """
                 INSERT INTO runtime_reconciliations (
@@ -117,6 +130,18 @@ class PostgresRuntimeReconciliationRepository:
         now = datetime.now(UTC)
         with self._database.connection() as connection:
             for deployment_id, available_at in candidates:
+                project = connection.execute(
+                    """
+                    SELECT project.status
+                    FROM projects AS project
+                    JOIN deployments AS deployment ON deployment.project_id = project.id
+                    WHERE deployment.id = %s
+                    FOR UPDATE OF project
+                    """,
+                    (deployment_id,),
+                ).fetchone()
+                if project is None or project["status"] == "DELETING":
+                    continue
                 connection.execute(
                     """
                     INSERT INTO runtime_reconciliations (

@@ -146,6 +146,10 @@ tbody tr:hover {
   align-items: start;
   gap: 1.2rem;
   grid-template-columns: minmax(0, 1.3fr) minmax(330px, 0.7fr);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .sticky-card {

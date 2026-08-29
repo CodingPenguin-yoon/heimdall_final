@@ -79,6 +79,32 @@ applied hostname can access it.
 The Routing Worker is not another proxy. It is a control-plane process that writes, validates,
 reloads, probes, and reconciles Edge configuration. It never handles user traffic.
 
+### Project deletion control path
+
+The API never operates Docker or the runtime filesystem. An authenticated, CSRF-protected request
+with the full project UUID records `DELETING` and a durable deletion job. Projects with Managed
+PostgreSQL additionally require the exact application-data confirmation phrase.
+
+```text
+API transaction: project DELETING + deletion intent
+  -> wait for deployment, routing, reconciliation, secret, and database operations
+  -> request public route disable
+  -> Routing Worker confirms hostname absent from the applied Edge snapshot
+  -> deletion Worker removes the project Gateway and exact-identity runtime resources
+  -> remove workspace, Gateway config, Managed PostgreSQL database/role, and project secrets
+  -> final fenced transaction removes child metadata, deletion job, and project row
+```
+
+Every external mutation rechecks the live claim and lease. Runtime removal requires exact
+`managed`, `project`, `deployment`, and `kind` labels plus an unchanged immutable Docker ID;
+filesystem removal uses owner-only no-follow traversal and inode checks. Database removal uses a
+resource advisory lock, exact catalog marker and owner checks, bounded timeouts, and idempotent
+quiesce/drop phases. A `NOINHERIT` provisioner activates `pg_signal_backend` only around exact target
+session termination and resets it before the remaining observation and drop phases. Ambiguous identity
+or observation preserves the resource and deletion metadata.
+The shared Edge container/network and resources belonging to other projects are never deletion
+targets.
+
 ## Why Keep One Gateway per Project?
 
 Application containers and generation networks are replaceable. The Project Gateway provides a

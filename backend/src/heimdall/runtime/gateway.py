@@ -46,6 +46,7 @@ class NginxGatewayActivator:
         self._runner = runner
         self._probe = probe
         self._config_root = config_root.resolve()
+        _ensure_private_directory(self._config_root)
         self._docker_executable = docker_executable
         self._image = image
         self._command_timeout_seconds = command_timeout_seconds

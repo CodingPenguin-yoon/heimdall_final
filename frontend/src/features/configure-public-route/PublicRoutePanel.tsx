@@ -30,7 +30,13 @@ function errorMessage(error: unknown): string | null {
   return error ? 'Public hostname 요청을 처리하지 못했습니다.' : null;
 }
 
-export function PublicRoutePanel({ projectId }: { projectId: string }) {
+export function PublicRoutePanel({
+  projectId,
+  disabled = false,
+}: {
+  projectId: string;
+  disabled?: boolean;
+}) {
   const queryClient = useQueryClient();
   const publicRoute = useQuery(publicRouteQuery(projectId));
   const [draftSubdomain, setDraftSubdomain] = useState<string | null>(null);
@@ -52,6 +58,7 @@ export function PublicRoutePanel({ projectId }: { projectId: string }) {
   const route = publicRoute.data;
   const subdomain = draftSubdomain ?? route?.subdomain ?? '';
   const busy = save.isPending || disable.isPending;
+  const locked = busy || disabled;
   const message = errorMessage(save.error ?? disable.error ?? publicRoute.error);
   const retryable = route?.status === 'FAILED' || route?.status === 'UNCERTAIN';
   const desiredUrl = route ? `http://${route.hostname}` : null;
@@ -156,6 +163,7 @@ export function PublicRoutePanel({ projectId }: { projectId: string }) {
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
+              disabled={disabled}
               placeholder="student-a"
               onChange={(event) => setDraftSubdomain(event.target.value)}
             />
@@ -166,18 +174,18 @@ export function PublicRoutePanel({ projectId }: { projectId: string }) {
               <button
                 type="button"
                 className="button secondary"
-                disabled={busy}
+                disabled={locked}
                 onClick={requestDisable}
               >
                 비활성화
               </button>
             ) : null}
             {retryable ? (
-              <button type="button" className="button secondary" disabled={busy} onClick={retry}>
+              <button type="button" className="button secondary" disabled={locked} onClick={retry}>
                 <Icon name="refresh" /> 다시 시도
               </button>
             ) : null}
-            <button className="button primary" disabled={busy || !subdomain.trim()}>
+            <button className="button primary" disabled={locked || !subdomain.trim()}>
               {save.isPending
                 ? '요청 중…'
                 : route?.desiredState === 'DISABLED'

@@ -45,6 +45,11 @@ class ProjectDatabaseVersionConflict(RuntimeError):
     pass
 
 
+class ProjectDatabaseProjectDeletingError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("PROJECT_DELETING")
+
+
 @dataclass(slots=True)
 class ProjectDatabaseProvisioningError(Exception):
     stage: str

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from heimdall.database import Database
 from heimdall.project_database.models import (
     ProjectDatabasePhase,
+    ProjectDatabaseProjectDeletingError,
     ProjectDatabaseResource,
     ProjectDatabaseStatus,
     ProjectDatabaseVersionConflict,
@@ -47,13 +48,22 @@ class PostgresProjectDatabaseRepository:
         return _resource(row) if row is not None else None
 
     def ensure_intent(self, project_id: UUID) -> ProjectDatabaseResource:
-        existing = self.get_for_project(project_id)
-        if existing is not None:
-            return existing
         resource_id = uuid4()
         suffix = resource_id.hex
         now = datetime.now(UTC)
         with self._database.connection() as connection:
+            project = connection.execute(
+                "SELECT status FROM projects WHERE id = %s FOR UPDATE",
+                (project_id,),
+            ).fetchone()
+            if project is not None and project["status"] == "DELETING":
+                raise ProjectDatabaseProjectDeletingError
+            existing = connection.execute(
+                "SELECT * FROM project_database_resources WHERE project_id = %s",
+                (project_id,),
+            ).fetchone()
+            if existing is not None:
+                return _resource(existing)
             row = connection.execute(
                 """
                 INSERT INTO project_database_resources (

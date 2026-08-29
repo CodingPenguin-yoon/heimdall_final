@@ -25,6 +25,7 @@ const project: Project = {
   repositoryUrl: 'https://github.com/CodingPenguin-yoon/heimdall',
   branch: 'main',
   status: 'READY',
+  hasManagedDatabase: false,
   configVersion: 1,
   deploymentConfig: {
     services: [

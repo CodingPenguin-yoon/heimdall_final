@@ -58,6 +58,11 @@ class ReconciliationInProgressError(RuntimeError):
     pass
 
 
+class ReconciliationProjectDeletingError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("PROJECT_DELETING")
+
+
 class ReconciliationClaimLostError(RuntimeError):
     pass
 

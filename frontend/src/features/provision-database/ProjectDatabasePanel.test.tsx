@@ -61,4 +61,15 @@ describe('ProjectDatabasePanel', () => {
     expect(screen.getByText('hd_db_d7b86499b5a6485d9daa58a2d3354910')).toBeInTheDocument();
     expect(screen.getByText(/DATABASE_PASSWORD_FILE/)).toBeInTheDocument();
   });
+
+  it('disables database provisioning while the project is deleting', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectDatabasePanel projectId="project-1" disabled />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Database 생성' })).toBeDisabled();
+  });
 });

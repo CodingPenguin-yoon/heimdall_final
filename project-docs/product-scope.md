@@ -16,6 +16,7 @@ Initialize the fixed administrator secrets
 -> 상태와 로그 관찰
 -> 안정 preview 접근
 -> project HTTP public hostname 접근
+-> 전체 UUID와 별도 application-data 문구로 project 영구 삭제
 ```
 
 ## 포함
@@ -54,6 +55,8 @@ Initialize the fixed administrator secrets
 - 배포 상태, 이력, 실패 단계, 로그
 - 구조화 deployment event snapshot·SSE와 계속 유지되는 loopback stable Preview link
 - 불확실 runtime 보존, 자동 안전 재확인과 관리자 confirmed cleanup
+- phase·claim token·lease 기반 project deletion job, Edge-first runtime teardown, exact identity
+  검증, project secret 제거와 선택적으로 확인된 Managed PostgreSQL database·role purge
 
 ## 초기 비범위
 
@@ -64,7 +67,7 @@ Initialize the fixed administrator secrets
 - arbitrary branch/tag/SHA
 - image registry와 image rollback
 - Managed DB password rotation과 사람용 단기 DB credential
-- project database backup·restore·purge 자동화
+- project database backup·restore 자동화와 project 전체 삭제와 무관한 임의 purge
 - volume/data rollback
 - Kubernetes runtime과 multi-node scheduling
 - Signup, multiple users, user management, RBAC, password recovery, and database-backed

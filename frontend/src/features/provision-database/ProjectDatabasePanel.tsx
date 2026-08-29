@@ -5,7 +5,13 @@ import { databaseKeys, projectDatabaseQuery } from '@/entities/database/queries'
 import { ApiError } from '@/shared/api/client';
 import { Icon } from '@/shared/ui/Icon';
 
-export function ProjectDatabasePanel({ projectId }: { projectId: string }) {
+export function ProjectDatabasePanel({
+  projectId,
+  disabled = false,
+}: {
+  projectId: string;
+  disabled?: boolean;
+}) {
   const queryClient = useQueryClient();
   const database = useQuery(projectDatabaseQuery(projectId, true));
   const provision = useMutation({
@@ -41,7 +47,7 @@ export function ProjectDatabasePanel({ projectId }: { projectId: string }) {
           <button
             className="button primary"
             onClick={() => provision.mutate()}
-            disabled={provision.isPending}
+            disabled={disabled || provision.isPending}
           >
             <Icon name="plus" /> {provision.isPending ? '생성 중…' : 'Database 생성'}
           </button>
@@ -78,7 +84,7 @@ export function ProjectDatabasePanel({ projectId }: { projectId: string }) {
       )}
 
       {data?.status === 'FAILED' ? (
-        <button className="button secondary" onClick={() => provision.mutate()}>
+        <button className="button secondary" disabled={disabled} onClick={() => provision.mutate()}>
           다시 시도
         </button>
       ) : null}

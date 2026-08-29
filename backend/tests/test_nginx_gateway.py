@@ -547,6 +547,21 @@ def test_edge_network_connector_requires_the_alias_after_connect() -> None:
     assert raised.value.code == "GATEWAY_EDGE_NETWORK_CONNECT_FAILED"
 
 
+def test_gateway_activator_creates_owner_only_config_root(tmp_path: Path) -> None:
+    root = tmp_path / "runtime" / "gateways"
+
+    NginxGatewayActivator(
+        MemoryRuntimes(),
+        GatewayDocker(),
+        GatewayRunner(),
+        HealthyRoute(),
+        root,
+    )
+
+    assert root.is_dir()
+    assert root.stat().st_mode & 0o777 == 0o700
+
+
 def test_gateway_activates_candidate_and_persists_stable_preview(tmp_path: Path) -> None:
     item = runtime_deployment()
     runtime = RuntimeDeployment.from_deployment(item)

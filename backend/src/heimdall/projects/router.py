@@ -6,6 +6,8 @@ from heimdall.projects.schemas import (
     CommitList,
     CommitRead,
     ProjectCreate,
+    ProjectDeletionRead,
+    ProjectDeletionRequest,
     ProjectList,
     ProjectRead,
     ProjectSettingsUpdate,
@@ -32,6 +34,33 @@ def list_projects(request: Request) -> ProjectList:
 @router.get("/{project_id}", response_model=ProjectRead)
 def get_project(project_id: UUID, request: Request) -> ProjectRead:
     return ProjectRead.from_project(service(request).get(project_id))
+
+
+@router.delete(
+    "/{project_id}",
+    response_model=ProjectDeletionRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def delete_project(
+    project_id: UUID, payload: ProjectDeletionRequest, request: Request
+) -> ProjectDeletionRead:
+    return ProjectDeletionRead.from_job(service(request).delete(project_id, payload))
+
+
+@router.get("/{project_id}/deletion", response_model=ProjectDeletionRead)
+def get_project_deletion(project_id: UUID, request: Request) -> ProjectDeletionRead:
+    return ProjectDeletionRead.from_job(service(request).deletion(project_id))
+
+
+@router.post(
+    "/{project_id}/deletion/retry",
+    response_model=ProjectDeletionRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_project_deletion(
+    project_id: UUID, payload: ProjectDeletionRequest, request: Request
+) -> ProjectDeletionRead:
+    return ProjectDeletionRead.from_job(service(request).retry_deletion(project_id, payload))
 
 
 @router.put("/{project_id}/settings", response_model=ProjectRead)

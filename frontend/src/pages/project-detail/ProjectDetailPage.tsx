@@ -54,7 +54,7 @@ export function ProjectDetailPage() {
       </header>
 
       <PreviewAccessPanel runtime={runtime.data} />
-      <PublicRoutePanel projectId={projectId} />
+      <PublicRoutePanel projectId={projectId} disabled={project.data.status === 'DELETING'} />
 
       {project.data.status === 'DRAFT' ? (
         <section className="setup-banner">
@@ -114,7 +114,12 @@ export function ProjectDetailPage() {
             )}
           </section>
 
-          {usesProjectDatabase ? <ProjectDatabasePanel projectId={projectId} /> : null}
+          {usesProjectDatabase ? (
+            <ProjectDatabasePanel
+              projectId={projectId}
+              disabled={project.data.status === 'DELETING'}
+            />
+          ) : null}
 
           <section className="panel">
             <div className="panel-heading">
@@ -150,7 +155,11 @@ export function ProjectDetailPage() {
                       <Icon name="arrow" />
                     </Link>
                     {deployment.failureCode === 'RECOVERY_STATE_UNCERTAIN' ? (
-                      <RuntimeReconciliationPanel deployment={deployment} projectId={projectId} />
+                      <RuntimeReconciliationPanel
+                        deployment={deployment}
+                        projectId={projectId}
+                        disabled={project.data.status === 'DELETING'}
+                      />
                     ) : null}
                   </article>
                 ))}

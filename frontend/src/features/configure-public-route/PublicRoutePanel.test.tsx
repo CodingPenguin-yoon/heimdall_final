@@ -29,11 +29,11 @@ const route: PublicRoute = {
   updatedAt: '2026-08-21T00:00:00Z',
 };
 
-function renderPanel() {
+function renderPanel(disabled = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <PublicRoutePanel projectId="project-1" />
+      <PublicRoutePanel projectId="project-1" disabled={disabled} />
     </QueryClientProvider>,
   );
 }
@@ -161,5 +161,14 @@ describe('PublicRoutePanel', () => {
       await screen.findByRole('link', { name: 'http://student-a.deploy.example' }),
     ).toHaveAttribute('href', 'http://student-a.deploy.example');
     expect(screen.getByText('http://student-b.deploy.example')).toBeInTheDocument();
+  });
+
+  it('disables hostname mutations while the project is deleting', async () => {
+    vi.mocked(getPublicRoute).mockResolvedValue(route);
+    renderPanel(true);
+
+    expect(await screen.findByRole('button', { name: '비활성화' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Hostname 변경' })).toBeDisabled();
+    expect(screen.getByRole('textbox', { name: 'Public hostname subdomain' })).toBeDisabled();
   });
 });

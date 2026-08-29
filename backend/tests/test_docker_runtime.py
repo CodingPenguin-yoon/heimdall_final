@@ -197,6 +197,32 @@ def test_docker_candidate_uses_file_mounts_and_service_scoped_managed_values(
     assert progress.stages == ["BUILDING", "STARTING", "HEALTH_CHECKING"]
 
 
+def test_docker_candidate_labels_each_owned_resource_with_its_exact_kind(tmp_path: Path) -> None:
+    item = runtime_deployment()
+    runtime = RuntimeDeployment.from_deployment(item)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "Dockerfile").write_text("FROM scratch\n")
+    secrets = FilePaths(tmp_path)
+    database = runtime.database
+    assert database is not None
+    secrets.add(runtime.services[0].secrets[0].reference, "user-secret-canary")
+    secrets.add(database.credential_reference, "database-secret-canary")
+    runner = RecordingRunner()
+
+    DockerRuntime(runner, RecordingProbe()).start_candidate(
+        item, runtime, source, secrets, RecordingProgress()
+    )
+
+    commands = [call[0] for call in runner.calls]
+    build = next(command for command in commands if command[1] == "build")
+    network = next(command for command in commands if command[1:3] == ["network", "create"])
+    container = next(command for command in commands if command[1] == "create")
+    assert "heimdall.kind=image" in build
+    assert "heimdall.kind=network" in network
+    assert "heimdall.kind=service" in container
+
+
 def test_failed_docker_command_preserves_bounded_output_without_raw_arguments(
     tmp_path: Path,
 ) -> None:
