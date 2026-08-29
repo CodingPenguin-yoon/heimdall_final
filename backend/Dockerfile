@@ -21,4 +21,4 @@ COPY src ./src
 
 RUN python -m pip install .
 
-CMD ["uvicorn", "heimdall.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "--factory", "heimdall.main:create_app", "--host", "0.0.0.0", "--port", "8000"]

@@ -4,8 +4,17 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 
 from fastapi import FastAPI
+from starlette.middleware.sessions import SessionMiddleware
 
 from heimdall.api import router
+from heimdall.auth.secrets import load_admin_secrets
+from heimdall.auth.service import (
+    LOCAL_SESSION_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    SESSION_MAX_AGE_SECONDS,
+    AdminAuthService,
+    session_signing_key,
+)
 from heimdall.common.errors import install_error_handlers
 from heimdall.config import Settings
 from heimdall.database import Database
@@ -18,6 +27,8 @@ from heimdall.project_database.repository import PostgresProjectDatabaseReposito
 from heimdall.project_database.service import ProjectDatabaseService
 from heimdall.projects.repository import PostgresProjectRepository
 from heimdall.projects.service import ProjectService
+from heimdall.public_routes.repository import PostgresPublicRouteRepository
+from heimdall.public_routes.service import PublicRouteService
 from heimdall.runtime.log_broker import UnixServiceLogBrokerClient, service_log_socket_path
 from heimdall.runtime.log_stream_broker import (
     UnixServiceLogStreamBrokerClient,
@@ -32,6 +43,8 @@ from heimdall.secrets.store import FileSecretStore
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings.from_environment()
+    admin_secrets = load_admin_secrets(app_settings.auth_secret_root)
+    auth = AdminAuthService(admin_secrets)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -79,18 +92,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             deployments,
             timedelta(hours=app_settings.runtime_retention_hours),
         )
+        public_routes = PublicRouteService(
+            PostgresPublicRouteRepository(database),
+            projects,
+            app_settings.deployment_base_domain,
+            app_settings.reserved_public_subdomains,
+        )
         app.state.projects = projects
         app.state.project_databases = project_databases
         app.state.deployments = deployments
         app.state.runtime_status = runtime_status
         app.state.runtime_reconciliations = runtime_reconciliations
+        app.state.public_routes = public_routes
         yield
         database.close()
 
     app = FastAPI(title="Heimdall API", version="0.1.0", lifespan=lifespan)
+    app.state.auth = auth
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=session_signing_key(
+            admin_secrets.signing_key,
+            secure=app_settings.auth_cookie_secure,
+        ),
+        session_cookie=(
+            SESSION_COOKIE_NAME if app_settings.auth_cookie_secure else LOCAL_SESSION_COOKIE_NAME
+        ),
+        max_age=SESSION_MAX_AGE_SECONDS,
+        path="/",
+        same_site="strict",
+        https_only=app_settings.auth_cookie_secure,
+        domain=None,
+    )
     install_error_handlers(app)
     app.include_router(router, prefix="/api")
     return app
-
-
-app = create_app()

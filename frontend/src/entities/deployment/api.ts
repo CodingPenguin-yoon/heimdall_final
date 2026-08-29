@@ -1,4 +1,4 @@
-import { requestJson } from '@/shared/api/client';
+import { requestJson, revalidateAuthenticatedSession } from '@/shared/api/client';
 
 import type {
   Deployment,
@@ -83,7 +83,10 @@ export function subscribeDeploymentEvents(
     source.close();
     handlers.onStreamError(value?.code ?? 'DEPLOYMENT_EVENT_STREAM_UNAVAILABLE');
   });
-  source.onerror = handlers.onConnectionError;
+  source.onerror = () => {
+    handlers.onConnectionError();
+    void revalidateAuthenticatedSession();
+  };
 
   return () => source.close();
 }
@@ -132,7 +135,10 @@ export function subscribeServiceLogs(
     source.close();
     handlers.onStreamError(value?.code ?? 'RUNTIME_LOG_STREAM_UNAVAILABLE');
   });
-  source.onerror = handlers.onConnectionError;
+  source.onerror = () => {
+    handlers.onConnectionError();
+    void revalidateAuthenticatedSession();
+  };
 
   return () => source.close();
 }

@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+import { mockAuthenticatedSession } from './support/auth';
+
 const deploymentId = '77777777-7777-4777-8777-777777777777';
 const projectId = '88888888-8888-4888-8888-888888888888';
 
@@ -21,6 +23,7 @@ const deployment = {
 test('follows live service logs and keeps manual snapshot refresh', async ({ page }) => {
   const streamedServices: Array<string | null> = [];
   const snapshotServices: Array<string | null> = [];
+  await mockAuthenticatedSession(page);
   await page.route(new RegExp(`/api/deployments/${deploymentId}(?:/.*)?`), async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === `/api/deployments/${deploymentId}`) {
@@ -105,6 +108,7 @@ test('receives structured deployment events over SSE from the last stored event'
   const activeDeploymentId = '99999999-9999-4999-8999-999999999999';
   const streamCursors: string[] = [];
   let currentStatus = 'BUILDING';
+  await mockAuthenticatedSession(page);
   await page.route(new RegExp(`/api/deployments/${activeDeploymentId}(?:/.*)?`), async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === `/api/deployments/${activeDeploymentId}`) {
@@ -191,6 +195,7 @@ test('shows a retained diagnostic artifact after failed resources were cleaned',
 }) => {
   const failedDeploymentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const artifactId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  await mockAuthenticatedSession(page);
   const metadata = {
     id: artifactId,
     deploymentId: failedDeploymentId,

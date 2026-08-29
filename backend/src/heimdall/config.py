@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROBE_HOST = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+DOCKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,23 @@ class Settings:
     worker_max_attempts: int
     runtime_retention_hours: float
     diagnostic_retention_days: float = 30
+    auth_secret_root: Path = Path("/run/secrets/heimdall/auth")
+    auth_secret_source_root: Path = Path("/run/secrets/heimdall/auth")
+    auth_cookie_secure: bool = True
+    management_hostname: str = "heimdall.localhost"
+    deployment_base_domain: str = "deployments.localhost"
+    reserved_public_subdomains: tuple[str, ...] = ("admin", "api", "www")
+    edge_config_root: Path = Path("/tmp/heimdall-python-edge")
+    edge_network_name: str = "heimdall-edge"
+    edge_container_name: str = "heimdall-edge-gateway"
+    edge_nginx_image: str = "nginx:1.29-alpine"
+    edge_probe_host: str = "127.0.0.1"
+    edge_http_port: int = 8088
+    routing_worker_lease_seconds: float = 60
+    routing_worker_poll_seconds: float = 1
+    routing_worker_max_attempts: int = 3
+    routing_worker_retry_seconds: float = 5
+    routing_worker_retry_max_seconds: float = 60
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -48,7 +67,64 @@ class Settings:
         runtime_probe_host = os.environ.get("HEIMDALL_RUNTIME_PROBE_HOST", "127.0.0.1")
         if not PROBE_HOST.fullmatch(runtime_probe_host):
             raise ValueError("HEIMDALL_RUNTIME_PROBE_HOST must be a hostname or IPv4 address")
-        return cls(
+        management_hostname = _hostname(
+            "HEIMDALL_MANAGEMENT_HOSTNAME",
+            os.environ.get("HEIMDALL_MANAGEMENT_HOSTNAME", "heimdall.localhost"),
+        )
+        deployment_base_domain = _hostname(
+            "HEIMDALL_DEPLOYMENT_BASE_DOMAIN",
+            os.environ.get("HEIMDALL_DEPLOYMENT_BASE_DOMAIN", "deployments.localhost"),
+        )
+        if management_hostname == deployment_base_domain or management_hostname.endswith(
+            f".{deployment_base_domain}"
+        ):
+            raise ValueError(
+                "HEIMDALL_MANAGEMENT_HOSTNAME must be outside the deployment base domain"
+            )
+        configured_reserved = os.environ.get("HEIMDALL_RESERVED_PUBLIC_SUBDOMAINS", "")
+        reserved = {"admin", "api", "www", management_hostname.split(".", 1)[0]}
+        for raw_label in configured_reserved.split(","):
+            if not raw_label.strip():
+                continue
+            label = raw_label.strip().lower()
+            if DNS_LABEL.fullmatch(label) is None or "--" in label:
+                raise ValueError(
+                    "HEIMDALL_RESERVED_PUBLIC_SUBDOMAINS must contain lowercase DNS labels"
+                )
+            reserved.add(label)
+        edge_probe_host = os.environ.get("HEIMDALL_EDGE_PROBE_HOST", "127.0.0.1")
+        if not PROBE_HOST.fullmatch(edge_probe_host):
+            raise ValueError("HEIMDALL_EDGE_PROBE_HOST must be a hostname or IPv4 address")
+        edge_http_port = int(os.environ.get("HEIMDALL_EDGE_HTTP_PORT", "8088"))
+        if not 1 <= edge_http_port <= 65535:
+            raise ValueError("HEIMDALL_EDGE_HTTP_PORT must be between 1 and 65535")
+        auth_secret_root = Path(
+            os.environ.get("HEIMDALL_AUTH_SECRET_ROOT", "/run/secrets/heimdall/auth")
+        )
+        if not auth_secret_root.is_absolute():
+            raise ValueError("HEIMDALL_AUTH_SECRET_ROOT must be an absolute path")
+        auth_secret_source_root = _absolute_lexical_path(
+            "HEIMDALL_AUTH_SECRET_SOURCE_ROOT",
+            os.environ.get("HEIMDALL_AUTH_SECRET_SOURCE_ROOT", str(auth_secret_root)),
+        )
+        auth_cookie_secure = _boolean("HEIMDALL_AUTH_COOKIE_SECURE", default=True)
+        if not auth_cookie_secure and not management_hostname.endswith(".localhost"):
+            raise ValueError(
+                "HEIMDALL_AUTH_COOKIE_SECURE can only be false for a .localhost management hostname"
+            )
+        edge_config_root = Path(
+            os.environ.get("HEIMDALL_EDGE_CONFIG_ROOT", "/tmp/heimdall-python-edge")
+        ).resolve()
+        for shared_root_name, shared_root in (
+            ("HEIMDALL_RUNTIME_ROOT", runtime_root),
+            ("HEIMDALL_GIT_WORKSPACE_ROOT", workspace),
+            ("HEIMDALL_EDGE_CONFIG_ROOT", edge_config_root),
+        ):
+            if _paths_overlap(auth_secret_source_root, shared_root):
+                raise ValueError(
+                    f"HEIMDALL_AUTH_SECRET_SOURCE_ROOT must not overlap {shared_root_name}"
+                )
+        settings = cls(
             database_url=os.environ.get(
                 "HEIMDALL_DATABASE_URL",
                 "postgresql://heimdall:change-me@127.0.0.1:55432/heimdall",
@@ -90,4 +166,90 @@ class Settings:
             diagnostic_retention_days=float(
                 os.environ.get("HEIMDALL_DIAGNOSTIC_RETENTION_DAYS", "30")
             ),
+            auth_secret_root=auth_secret_root,
+            auth_secret_source_root=auth_secret_source_root,
+            auth_cookie_secure=auth_cookie_secure,
+            management_hostname=management_hostname,
+            deployment_base_domain=deployment_base_domain,
+            reserved_public_subdomains=tuple(sorted(reserved)),
+            edge_config_root=edge_config_root,
+            edge_network_name=os.environ.get("HEIMDALL_EDGE_NETWORK_NAME", "heimdall-edge"),
+            edge_container_name=os.environ.get(
+                "HEIMDALL_EDGE_CONTAINER_NAME", "heimdall-edge-gateway"
+            ),
+            edge_nginx_image=os.environ.get("HEIMDALL_EDGE_NGINX_IMAGE", "nginx:1.29-alpine"),
+            edge_probe_host=edge_probe_host,
+            edge_http_port=edge_http_port,
+            routing_worker_lease_seconds=float(
+                os.environ.get("HEIMDALL_ROUTING_WORKER_LEASE_SECONDS", "60")
+            ),
+            routing_worker_poll_seconds=float(
+                os.environ.get("HEIMDALL_ROUTING_WORKER_POLL_SECONDS", "1")
+            ),
+            routing_worker_max_attempts=int(
+                os.environ.get("HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS", "3")
+            ),
+            routing_worker_retry_seconds=float(
+                os.environ.get("HEIMDALL_ROUTING_WORKER_RETRY_SECONDS", "5")
+            ),
+            routing_worker_retry_max_seconds=float(
+                os.environ.get("HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS", "60")
+            ),
         )
+        if not DOCKER_NAME.fullmatch(settings.edge_network_name):
+            raise ValueError("HEIMDALL_EDGE_NETWORK_NAME must be a Docker resource name")
+        if not DOCKER_NAME.fullmatch(settings.edge_container_name):
+            raise ValueError("HEIMDALL_EDGE_CONTAINER_NAME must be a Docker resource name")
+        if not settings.edge_nginx_image.strip():
+            raise ValueError("HEIMDALL_EDGE_NGINX_IMAGE must not be blank")
+        if settings.routing_worker_lease_seconds <= 0:
+            raise ValueError("HEIMDALL_ROUTING_WORKER_LEASE_SECONDS must be positive")
+        if settings.routing_worker_poll_seconds <= 0:
+            raise ValueError("HEIMDALL_ROUTING_WORKER_POLL_SECONDS must be positive")
+        if settings.routing_worker_max_attempts < 1:
+            raise ValueError("HEIMDALL_ROUTING_WORKER_MAX_ATTEMPTS must be positive")
+        if settings.routing_worker_retry_seconds <= 0:
+            raise ValueError("HEIMDALL_ROUTING_WORKER_RETRY_SECONDS must be positive")
+        if settings.routing_worker_retry_max_seconds < settings.routing_worker_retry_seconds:
+            raise ValueError(
+                "HEIMDALL_ROUTING_WORKER_RETRY_MAX_SECONDS must be at least the retry delay"
+            )
+        return settings
+
+
+def _hostname(name: str, value: str) -> str:
+    hostname = value.strip().lower().rstrip(".")
+    if len(hostname) > 253 or "." not in hostname:
+        raise ValueError(f"{name} must be a canonical hostname")
+    if any(DNS_LABEL.fullmatch(label) is None for label in hostname.split(".")):
+        raise ValueError(f"{name} must be a canonical hostname")
+    return hostname
+
+
+def _absolute_lexical_path(name: str, value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"{name} must be an absolute path")
+    return Path(os.path.normpath(path))
+
+
+def _boolean(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    normalized_left = Path(os.path.normpath(left))
+    normalized_right = Path(os.path.normpath(right))
+    return (
+        normalized_left == normalized_right
+        or normalized_left.is_relative_to(normalized_right)
+        or normalized_right.is_relative_to(normalized_left)
+    )

@@ -197,6 +197,7 @@ def worker(
     processor: Processor,
     *,
     diagnostics: bool = False,
+    on_runtime_ready=None,
 ) -> RuntimeReconciliationWorker:
     return RuntimeReconciliationWorker(
         repository,
@@ -206,6 +207,7 @@ def worker(
         lease_duration=timedelta(minutes=1),
         retention_duration=timedelta(hours=72),
         diagnostic_retention=timedelta(days=30) if diagnostics else None,
+        on_runtime_ready=on_runtime_ready,
     )
 
 
@@ -214,11 +216,44 @@ def test_active_preserved_generation_is_adopted_without_cleanup() -> None:
     repository = MemoryReconciliations(reconciliation(deployment.id))
     deployments = MemoryDeployments(deployment)
     processor = Processor(RecoveryDisposition.ACTIVE)
+    woken_projects = []
 
-    assert worker(repository, deployments, processor).run_once() is True
+    assert (
+        worker(
+            repository,
+            deployments,
+            processor,
+            on_runtime_ready=woken_projects.append,
+        ).run_once()
+        is True
+    )
 
     assert deployments.reconciled is True
     assert processor.cleaned is False
+    assert repository.resolved == (
+        ReconciliationResult.ACTIVE,
+        "ACTIVE_GENERATION_RECONCILED",
+    )
+    assert woken_projects == [deployment.project_id]
+
+
+def test_runtime_wake_failure_does_not_block_active_reconciliation() -> None:
+    deployment = uncertain_deployment()
+    repository = MemoryReconciliations(reconciliation(deployment.id))
+    deployments = MemoryDeployments(deployment)
+    processor = Processor(RecoveryDisposition.ACTIVE)
+
+    def fail_to_wake(project_id) -> None:
+        raise RuntimeError(f"could not wake {project_id}")
+
+    worker(
+        repository,
+        deployments,
+        processor,
+        on_runtime_ready=fail_to_wake,
+    ).run_once()
+
+    assert deployments.reconciled is True
     assert repository.resolved == (
         ReconciliationResult.ACTIVE,
         "ACTIVE_GENERATION_RECONCILED",

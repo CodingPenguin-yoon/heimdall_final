@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 
 import { saveProjectSettings } from '@/entities/project/api';
@@ -15,7 +15,23 @@ import { Icon } from '@/shared/ui/Icon';
 
 import { ServiceEnvironmentEditor } from './ServiceEnvironmentEditor';
 
-const emptyService = (index: number): ServiceConfig => ({
+type ServiceDraft = Omit<ServiceConfig, 'internalPort'> & {
+  draftKey: string;
+  internalPort: number | '';
+};
+
+interface RouteDraft {
+  path: string;
+  serviceKey: string;
+}
+
+interface DeploymentConfigDraft {
+  services: ServiceDraft[];
+  routes: RouteDraft[];
+}
+
+const emptyService = (index: number): ServiceDraft => ({
+  draftKey: `service-${index}`,
   name: index === 0 ? 'web' : `service-${index + 1}`,
   build: { context: index === 0 ? '.' : `service-${index + 1}`, dockerfile: 'Dockerfile' },
   internalPort: index === 0 ? 3000 : 8000,
@@ -24,19 +40,26 @@ const emptyService = (index: number): ServiceConfig => ({
   projectDatabaseAccess: false,
 });
 
-function initialConfig(project: Project): DeploymentConfig {
+function initialConfig(project: Project): DeploymentConfigDraft {
   if (!project.deploymentConfig) {
+    const service = emptyService(0);
     return {
-      services: [emptyService(0)],
-      routes: [{ path: '/', service: 'web' }],
+      services: [service],
+      routes: [{ path: '/', serviceKey: service.draftKey }],
     };
   }
+  const services = project.deploymentConfig.services.map((service, index) => ({
+    ...service,
+    draftKey: `service-${index}`,
+    environment: service.environment ?? [],
+    projectDatabaseAccess: service.projectDatabaseAccess ?? false,
+  }));
+  const serviceKeys = new Map(services.map((service) => [service.name, service.draftKey]));
   return {
-    ...project.deploymentConfig,
-    services: project.deploymentConfig.services.map((service) => ({
-      ...service,
-      environment: service.environment ?? [],
-      projectDatabaseAccess: service.projectDatabaseAccess ?? false,
+    services,
+    routes: project.deploymentConfig.routes.map((route) => ({
+      path: route.path,
+      serviceKey: serviceKeys.get(route.service) ?? '',
     })),
   };
 }
@@ -44,6 +67,7 @@ function initialConfig(project: Project): DeploymentConfig {
 export function ProjectSettingsForm({ project }: { project: Project }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const nextServiceIndex = useRef(project.deploymentConfig?.services.length ?? 1);
   const [config, setConfig] = useState(() => initialConfig(project));
 
   const mutation = useMutation({
@@ -56,7 +80,7 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
     },
   });
 
-  function updateService(index: number, patch: Partial<ServiceConfig>) {
+  function updateService(index: number, patch: Partial<ServiceDraft>) {
     setConfig((current) => ({
       ...current,
       services: current.services.map((service, serviceIndex) =>
@@ -74,7 +98,7 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
     }));
   }
 
-  function updateRoute(index: number, patch: Partial<RouteConfig>) {
+  function updateRoute(index: number, patch: Partial<RouteDraft>) {
     setConfig((current) => ({
       ...current,
       routes: current.routes.map((route, routeIndex) =>
@@ -85,7 +109,19 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    mutation.mutate(config);
+    const services: ServiceConfig[] = [];
+    const serviceNames = new Map<string, string>();
+    for (const service of config.services) {
+      if (service.internalPort === '') return;
+      const { draftKey, ...serviceConfig } = service;
+      serviceNames.set(draftKey, service.name);
+      services.push({ ...serviceConfig, internalPort: service.internalPort });
+    }
+    const routes: RouteConfig[] = config.routes.map((route) => ({
+      path: route.path,
+      service: serviceNames.get(route.serviceKey) ?? '',
+    }));
+    mutation.mutate({ services, routes });
   }
 
   const message = mutation.error instanceof ApiError ? mutation.error.message : null;
@@ -113,7 +149,9 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
                     setConfig((current) => ({
                       ...current,
                       services: current.services.filter((_, itemIndex) => itemIndex !== index),
-                      routes: current.routes.filter((route) => route.service !== service.name),
+                      routes: current.routes.filter(
+                        (route) => route.serviceKey !== service.draftKey,
+                      ),
                     }));
                   }}
                 >
@@ -135,10 +173,12 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
                     type="number"
                     min={1}
                     max={65535}
+                    required
                     value={service.internalPort}
-                    onChange={(event) =>
-                      updateService(index, { internalPort: Number(event.target.value) })
-                    }
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      updateService(index, { internalPort: value === '' ? '' : Number(value) });
+                    }}
                   />
                 </label>
                 <label>
@@ -177,12 +217,14 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
         <button
           type="button"
           className="button dashed"
-          onClick={() =>
+          onClick={() => {
+            const service = emptyService(nextServiceIndex.current);
+            nextServiceIndex.current += 1;
             setConfig((current) => ({
               ...current,
-              services: [...current.services, emptyService(current.services.length)],
-            }))
-          }
+              services: [...current.services, service],
+            }));
+          }}
         >
           <Icon name="plus" /> 서비스 추가
         </button>
@@ -208,11 +250,11 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
               <span>→</span>
               <select
                 aria-label={`Route ${index + 1} service`}
-                value={route.service}
-                onChange={(event) => updateRoute(index, { service: event.target.value })}
+                value={route.serviceKey}
+                onChange={(event) => updateRoute(index, { serviceKey: event.target.value })}
               >
                 {config.services.map((service) => (
-                  <option key={service.name} value={service.name}>
+                  <option key={service.draftKey} value={service.draftKey}>
                     {service.name}
                   </option>
                 ))}
@@ -242,7 +284,10 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
           onClick={() =>
             setConfig((current) => ({
               ...current,
-              routes: [...current.routes, { path: '/api', service: current.services[0].name }],
+              routes: [
+                ...current.routes,
+                { path: '/api', serviceKey: current.services[0].draftKey },
+              ],
             }))
           }
         >
