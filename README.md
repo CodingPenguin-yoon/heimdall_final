@@ -1,679 +1,235 @@
 # Heimdall
 
-Heimdall은 Public GitHub 저장소의 `main` commit을 격리된 Docker candidate로 빌드하고, 검증을
-통과한 버전만 안정적인 preview route와 project별 HTTP hostname으로 공개하는 self-hosted 배포
-관리 도구다.
+> 반복적인 배포 과정을 하나의 요청으로 연결해 Preview 환경을 만드는 셀프 호스팅 배포 자동화 도구
 
-> **현재 상태** · Alpha · 단일 Docker host · Public GitHub 저장소 · Operator-specific
+Heimdall은 공개 GitHub 저장소의 애플리케이션을 가져와 Docker 이미지로 빌드하고, 실행 가능한지
+확인한 뒤 안정적인 Preview URL과 설정한 프로젝트별 `hostname`으로 연결한다.
 
-이 저장소는 현재 특정 운영자의 단일 호스트 인프라에서 실제로 운영하는 self-hosted
-reference implementation이다. 범용 installer, one-click production setup, managed SaaS를 제공하지
-않는다. 로컬 Compose 절차는 개발·검증용이며 실제 운영은 DNS, TLS termination, private
-networking과 외부 Managed PostgreSQL을 운영 환경에 맞게 별도로 구성해야 한다.
+**현재 상태:** Alpha · 단일 Docker 호스트 · 공개 GitHub 저장소 · 단일 관리자
 
-현재 구현 범위는 다음과 같다.
+## 문제
 
-- One fixed `admin` account with Argon2id password verification, signed browser sessions, and
-  session-bound CSRF protection for the management UI and API
-- Public HTTPS 저장소 등록과 `main` 검증
-- `DRAFT -> READY` 프로젝트 설정
-- multi-service, route, health check 설정
-- service별 plain·secret 환경변수와 PostgreSQL 접근 선언
-- 별도 Managed PostgreSQL의 project database·role 생성
-- owner-only secret file과 non-secret DB 연결정보
-- 최근 `main` commit 조회
-- 최신 또는 특정 commit 배포 요청과 immutable 설정 snapshot
-- PostgreSQL claim token·lease 기반 deployment Worker와 재시작 회수
-- exact SHA checkout과 multi-service Docker candidate
-- plain 환경변수, user secret file, Managed DB password file 주입
-- service health check와 project별 NGINX atomic activation
-- generation 전환 시 동일 Preview 포트의 candidate network 기준 NGINX gateway 재생성·재검증
-- 실패 시 last-known-good preview 보존과 candidate label cleanup
-- 명시적으로 정지된 managed NGINX gateway의 다음 배포 시 stable preview port 복구
-- project gateway의 생성·generation 전환·복구 시 고정 `heimdall-edge` network와 deterministic
-  alias 유지
-- 별도 lifecycle의 공용 Edge NGINX, exact 관리 hostname과 unknown hostname 기본 `404`
-- project당 하나의 server-derived public hostname, 전체 hostname uniqueness와 desired/applied revision
-- durable Routing Worker의 Edge config test·atomic replace·reload·hostname probe·startup reconciliation
-- durable cursor 기반 배포 event SSE, 실패 단계와 안정 preview link
-- Worker 매개 service별 최근 container stdout·stderr 200줄 snapshot·SSE와 secret 마스킹
-- 실패 배포의 bounded command·service 진단 artifact와 기본 30일 보존·조회
-- 모든 프로젝트의 최근 배포 100건을 조회·필터링하는 전역 배포 활동 화면
-- 밝은 화이트톤 관리 UI
-
-기존 stable preview port는 계속 host loopback에만 공개한다. public hostname은 Edge의 HTTP
-listener를 통해 인증 없이 접근하며 Edge는 application container가 아니라 project gateway만
-가리킨다. 외부 HTTPS/TLS와 wildcard certificate 발급·갱신은 운영자가 관리하는
-Cloudflare와 public reverse proxy가 담당하며 이 저장소의 lifecycle에는 포함하지 않는다.
-
-## 구조
+애플리케이션을 배포할 때마다 같은 작업을 반복해야 했다.
 
 ```text
-backend/       FastAPI backend
-frontend/      React control UI
-project-docs/  제품·아키텍처·구현 기준
-infra/         로컬 외부 상태
+소스 준비
+-> 서비스별 이미지 빌드
+-> 환경변수와 secret 연결
+-> network와 container 실행
+-> 동작 확인
+-> reverse proxy와 접근 주소 연결
 ```
 
-## 문서 안내
+각 작업은 한 번만 보면 단순하지만, 새 버전을 배포하거나 Preview 환경을 다시 만들 때마다 같은
+순서로 수행해야 했다. 이 반복은 배포에 필요한 시간을 늘렸고, 여러 서비스와 설정을 매번 빠뜨리지
+않고 맞추는 일도 번거롭게 만들었다.
 
-- [상세 아키텍처와 네트워크 경계](project-docs/architecture.md)
-- [프로젝트 등록부터 배포·공개 hostname 적용까지](project-docs/architecture.md#end-to-end-example-registration-to-public-route)
-- [현재 제품 범위와 비범위](project-docs/product-scope.md)
-- [승인된 기술 방향과 운영 규칙](project-docs/project-profile.md)
+## 해결
 
-## 운영 아키텍처
+Git 저장소와 서비스 구성을 한 번 등록한 뒤 배포할 `commit`을 선택하면, 소스 준비부터 Preview
+연결까지 이어지는 과정을 Heimdall이 수행하도록 만들었다.
 
-아래는 현재 외부 데모에서 사용 중인 배치 예시다. 구체적인 public·private IP는 표기하지
-않았으며, 도메인과 네트워크 endpoint는 운영 환경에서 변경할 수 있다.
+| 반복 작업               | Heimdall이 수행하는 일                                              |
+| ----------------------- | ------------------------------------------------------------------- |
+| 배포할 소스 준비        | 허용된 `main` 이력의 정확한 commit SHA checkout                     |
+| 서비스별 실행 환경 구성 | Docker 이미지 빌드, 환경변수·secret 주입                            |
+| 여러 서비스 실행        | generation network와 candidate container 생성                       |
+| 배포 결과 확인          | 서비스별 health check                                               |
+| 접근 경로 변경          | Project Gateway 검증 후 새 generation 연결                          |
+| 결과 공유               | 배포가 바뀌어도 유지되는 Preview URL과 설정한 project hostname 제공 |
+
+프로젝트 설정은 Heimdall에 저장되므로 같은 프로젝트를 다시 배포할 때 이 과정을 처음부터 조립할
+필요가 없다. 사용자는 최신 또는 최근 `main`의 `commit`을 선택하고 배포를 요청하면 된다.
+
+## 결과
+
+동일한 구성으로 다시 배포할 때 사용자는 `commit`을 선택하고 하나의 배포 요청을 보낸다. Heimdall은
+위에서 구분한 여섯 종류의 작업을 이어서 수행하고, 배포가 끝나면 바로 확인할 수 있는 Preview URL을
+제공한다. 다음 배포에서도 기존 설정과 접근 주소를 이어서 사용하므로 반복 배포에 필요한 수작업의
+범위를 줄였다.
+
+배포 시간이나 단축률은 실행 환경에 따른 실제 측정값을 확보하기 전까지 성과로 표기하지 않았다.
+현재 README에서는 코드와 동작으로 확인할 수 있는 **자동화 범위**만 결과로 다룬다.
+
+## 사용자 실행 흐름
+
+저장소와 서비스 구성은 처음 한 번 등록한다. 이후 새 버전을 배포할 때는 저장된 설정을 다시 사용해
+`commit` 선택부터 Preview 확인까지의 흐름을 반복한다.
+
+```mermaid
+flowchart LR
+    subgraph Initial["처음 한 번"]
+        Repository["Git 저장소 등록"] --> Configuration["서비스 · route · 환경 설정"]
+    end
+
+    subgraph Repeated["반복 배포"]
+        Commit["commit 선택"] --> Request["배포 요청"]
+        Request --> Observe["진행 상태 · 로그 확인"]
+        Observe --> Preview["Preview URL 확인"]
+    end
+
+    Configuration --> Commit
+    Preview -.->|다음 버전| Commit
+```
+
+### 배포 요청 뒤 Heimdall이 하는 일
+
+사용자가 배포를 요청하면 다음 과정이 자동으로 이어진다.
+
+```mermaid
+flowchart LR
+    Request["배포 요청"] --> Snapshot["설정 snapshot"]
+    Snapshot --> Checkout["exact SHA checkout"]
+    Checkout --> Build["이미지 빌드"]
+    Build --> Candidate["candidate 실행"]
+    Candidate --> Health{"모든 service 정상?"}
+    Health -- yes --> Activate["Gateway 전환"]
+    Activate --> Preview["Preview URL"]
+    Health -- no --> Preserve["기존 Preview 유지"]
+    Preserve --> Diagnose["실패 단계와 진단 정보 기록"]
+```
+
+## 자동화를 구현하며 내린 기술적 판단
+
+아래 설계는 프로젝트의 출발점이 아니라, 반복 작업을 자동화한 뒤 그 자동화를 실제로 사용할 수
+있게 만들면서 추가한 판단이다.
+
+### 자동화가 잘못된 배포까지 빠르게 만들지 않게 한다
+
+새 버전을 기존 서비스에 바로 연결하지 않고 별도의 candidate generation으로 실행한다. 모든
+서비스의 health check가 성공한 뒤에만 Project Gateway를 전환한다. 빌드, 실행, 검증 또는 전환이
+실패하면 새 candidate를 노출하지 않고 마지막 정상 Preview를 유지한다.
+
+### 요청 순간의 배포 조건을 끝까지 보존한다
+
+배포 요청 시 프로젝트 설정을 변경 불가능한 snapshot으로 저장하고 정확한 commit SHA를 사용한다.
+배포가 진행되는 동안 프로젝트 설정이나 `main`의 최신 `commit`이 바뀌어도, 어떤 소스와 설정으로
+실행했는지 설명할 수 있다.
+
+긴 빌드와 container 작업은 HTTP 요청 안에서 처리하지 않는다. API는 DB에 보존되는 job을 기록하고,
+Deployment Worker가 claim token과 lease를 사용해 작업을 수행한다. Worker가 중단되면 새 Worker가
+DB, Docker와 NGINX 상태를 다시 확인한 뒤 이어서 처리한다.
+
+### 배포 버전과 접근 주소의 생명주기를 분리한다
+
+애플리케이션 container는 배포마다 바뀌지만 프로젝트별 Gateway는 고정 Preview port를 유지한다.
+Shared Edge도 application container가 아니라 Gateway만 바라본다. 덕분에 새 generation으로 전환할
+때 Preview 주소와 공개 routing 구성을 매번 새로 만들지 않아도 된다.
+
+### 실패 뒤에 다음 행동을 결정할 수 있게 한다
+
+배포 단계와 event를 구조화해 저장하고 진행 상황은 SSE로 전달한다. 서비스 로그와 실패 진단 정보는
+크기와 보존 기간을 제한하며, Heimdall이 알고 있는 secret을 마스킹할 수 없으면 원문을 반환하지
+않는다. 단순히 `FAILED`만 남기는 대신 어느 단계에서 무엇을 확인해야 하는지 알 수 있게 했다.
+
+## 아키텍처
 
 ```mermaid
 flowchart TB
-    Admin["관리자 브라우저"]
-    Visitor["서비스 사용자"]
+    Admin["관리자"] --> UI["React 관리 UI"]
+    UI --> API["FastAPI API"]
+    API --> ControlDB[(Control PostgreSQL)]
 
-    ManagementDNS["Cloudflare<br/>heimdallops.tech<br/>DNS + TLS"]
-    ApplicationDNS["Cloudflare<br/>*.heimdallapps.me<br/>DNS + TLS"]
+    ControlDB --> DeploymentWorker["Deployment Worker"]
+    ControlDB --> RoutingWorker["Routing Worker"]
 
-    subgraph PublicEdge["Public edge"]
-        ReverseProxy["OCI NGINX<br/>public reverse proxy"]
-        TunnelClient["WireGuard client"]
-    end
+    DeploymentWorker --> GitHub["공개 GitHub"]
+    DeploymentWorker --> Docker["Docker Engine"]
+    Docker --> Services["Application services"]
+    Docker --> Gateway["Project Gateway"]
+    Gateway --> Services
 
-    subgraph PrivateNetwork["Private network"]
-        TunnelServer["WireGuard server"]
+    RoutingWorker --> Edge["Shared Edge"]
+    PreviewUser["Preview 사용자"] --> Gateway
+    PublicUser["외부 사용자"] --> Edge
+    Edge --> Gateway
 
-        subgraph HeimdallHost["Heimdall VM"]
-            Edge["Shared Edge NGINX"]
-            ControlFrontend["Control frontend"]
-            API["Heimdall API"]
-            DeploymentWorker["Deployment Worker<br/>checkout · build · health · activation"]
-            RoutingWorker["Routing Worker<br/>hostname reconciliation"]
-            ControlDB["Control PostgreSQL"]
-            Docker["Docker Engine"]
-
-            subgraph ProjectRuntime["Project runtime"]
-                Gateway["Project NGINX gateway"]
-                FrontendService["Frontend service"]
-                BackendService["Backend service"]
-            end
-        end
-
-        subgraph ManagedDatabaseHost["Managed DB VM"]
-            ManagedDB["Managed PostgreSQL<br/>project application data"]
-        end
-    end
-
-    Admin --> ManagementDNS
-    Visitor --> ApplicationDNS
-    ManagementDNS --> ReverseProxy
-    ApplicationDNS --> ReverseProxy
-    ReverseProxy --> TunnelClient --> TunnelServer --> Edge
-
-    Edge -->|"management hostname"| ControlFrontend
-    ControlFrontend -->|"/api"| API
-
-    Edge -->|"project hostname"| Gateway
-    Gateway -->|"/"| FrontendService
-    Gateway -->|"configured routes"| BackendService
-
-    API -->|"deployment and routing jobs"| ControlDB
-    DeploymentWorker -->|"claim and status"| ControlDB
-    RoutingWorker -->|"desired/applied route state"| ControlDB
-
-    DeploymentWorker -->|"Docker socket"| Docker
-    Docker --> ProjectRuntime
-    DeploymentWorker -.->|"candidate health check"| FrontendService
-    DeploymentWorker -.->|"candidate health check"| BackendService
-    DeploymentWorker -->|"atomic activation"| Gateway
-
-    RoutingWorker -->|"Edge config test and reload"| Edge
-    RoutingWorker -->|"attach deterministic alias"| Gateway
-
-    BackendService -->|"project role"| ManagedDB
-    DeploymentWorker -->|"database provisioning"| ManagedDB
+    Services --> ManagedDB[(Managed PostgreSQL)]
 ```
 
-외부 요청은 Cloudflare에서 TLS를 종료한 뒤 public reverse proxy와 private tunnel을 거쳐 Shared
-Edge에 도착한다. Shared Edge는 management hostname을 Control frontend로, project hostname을
-해당 project gateway로 분기한다. application container는 Edge에 직접 노출되지 않는다.
+- **Control Plane:** UI, API, 두 Worker와 Control PostgreSQL이 프로젝트 설정과 배포 작업을 관리한다.
+- **Project Runtime:** Project Gateway와 application container가 실제 요청을 처리한다.
+- **요청 경로:** 이미 적용된 외부 요청은 API나 Worker를 거치지 않는다. Control Plane이 잠시
+  중단돼도 Edge와 Project Runtime이 살아 있다면 기존 Preview와 공개 경로는 유지된다.
+- **데이터베이스:** Heimdall의 운영 상태를 저장하는 Control PostgreSQL과 프로젝트의 application data를
+  저장하는 Managed PostgreSQL의 생명주기를 분리했다.
 
-Control Plane은 새 배포와 라우팅 변경을 관리한다. API가 Control PostgreSQL에 job을 등록하면
-Deployment Worker가 source checkout, image build, candidate health check와 gateway activation을 수행하고,
-Routing Worker가 desired/applied hostname snapshot을 Shared Edge에 반영한다. 한 번 적용된 public
-request data path에는 API, Worker, Control PostgreSQL이 포함되지 않아 Control Plane을 일시
-중지해도 기존 project gateway와 service가 살아 있으면 서비스는 계속 응답한다.
+상세한 네트워크 경계와 구성요소별 책임은
+[아키텍처 문서](project-docs/architecture.md)에서 확인할 수 있다.
 
-Control PostgreSQL은 project, deployment, job과 routing metadata만 소유한다. Managed PostgreSQL은
-project application data만 소유하며 Control DB와 Docker socket에 접근하지 않는다. host
-loopback에 게시되는 stable Preview port는 운영자 점검용이며 외부 사용자는 project
-hostname으로만 접근한다.
+## 현재 구현 범위
 
-프로젝트 등록, immutable deployment snapshot, Worker claim, candidate activation과 public route
-적용까지의 자세한 시퀀스는 [상세 배포 흐름](project-docs/architecture.md#end-to-end-example-registration-to-public-route)에서 설명한다.
+- HTTPS 공개 GitHub 저장소 등록과 고정 `main` 브랜치 검증
+- 여러 서비스의 Dockerfile 빌드와 서비스 간 private network
+- path 기반 route, 서비스별 health check, plain·secret 환경변수
+- 프로젝트별 Managed PostgreSQL 데이터베이스와 role
+- `main`의 최신 또는 최근 `commit`을 선택하는 수동 배포 요청
+- 배포 상태·이력·구조화 event SSE·서비스 로그·실패 진단 정보
+- 안정적인 호스트 loopback Preview URL과 프로젝트별 HTTP 공개 hostname
+- 실패 candidate 보존과 runtime reconciliation
+- 고정 `admin` 로그인, signed cookie와 session-bound CSRF
+- 정확한 resource identity를 확인하는 비동기 프로젝트 삭제
 
-## Single administrator authentication
+## 의도적으로 제한한 범위
 
-Heimdall has exactly one fixed administrator named `admin`. It does not create user or session
-tables and does not implement signup, user management, RBAC, or password recovery. The Backend is
-the security boundary; the frontend route guard prevents protected management screens from
-rendering before the current session is known.
+Heimdall은 범용 PaaS나 managed SaaS가 아니다. 현재 운영 환경에서 반복 배포를 줄이는 데 필요한
+범위를 먼저 구현했다.
 
-The authentication API is:
+- 단일 Docker 호스트와 한 명의 고정 관리자
+- 공개 GitHub 저장소와 `main` 브랜치만 지원
+- 배포는 사용자가 요청하며 webhook 기반 자동 배포는 지원하지 않음
+- Kubernetes, 다중 노드 스케줄링과 자동 failover는 지원하지 않음
+- private Git, image registry rollback과 custom domain은 지원하지 않음
+- 외부 DNS, TLS certificate, public reverse proxy와 private tunnel은 운영자가 관리
+
+전체 포함·비범위는 [제품 범위 문서](project-docs/product-scope.md)에 정리돼 있다.
+
+## 기술 스택
+
+| 영역      | 기술                                                         |
+| --------- | ------------------------------------------------------------ |
+| Backend   | Python 3.13, FastAPI, Pydantic, psycopg                      |
+| Frontend  | React, TypeScript, React Router, TanStack Query, CSS Modules |
+| 상태 저장 | Control PostgreSQL, 외부 Managed PostgreSQL                  |
+| 실행 환경 | Docker CLI, NGINX Project Gateway, shared NGINX Edge         |
+| 인프라    | Docker Compose                                               |
+| 검증      | pytest, Ruff, Vitest, Testing Library, Playwright            |
+
+정확한 dependency version은 `backend/pyproject.toml`, `frontend/package.json`과 lockfile이 관리한다.
+
+## 저장소 구조
 
 ```text
-POST /api/auth/login
-GET  /api/auth/session
-POST /api/auth/logout
+backend/       FastAPI API, deployment·routing Worker, runtime adapter
+frontend/      React 관리 UI
+infra/         Control Plane과 Shared Edge Compose
+doc/           처음 보는 운영자를 위한 쉬운 설명서
+project-docs/  제품 범위, 아키텍처 계약과 기술 결정
 ```
 
-`/api/health` and the authentication entry points remain outside the management-router dependency.
-Login verifies the stored Argon2id hash and creates an eight-hour signed session cookie. By default
-and in production, it is named `__Host-heimdall-session` and is `Secure`, `HttpOnly`, host-only,
-`SameSite=Strict`, and scoped to `/`; it contains only the admin identity, absolute expiry, a CSRF
-token, and a credential revision. Logout requires the exact session-bound `X-CSRF-Token`, clears
-the cookie, and returns JSON. Every other management API, including SSE handshakes, requires a
-valid session. `POST`, `PUT`, `PATCH`, and `DELETE` management requests also require the exact CSRF
-token.
+## 실행과 문서
 
-The public `/login` page checks the session before rendering management data, returns a successful
-login to the original internal deep link, and distinguishes an unauthenticated response from an API
-availability failure. The shared API client keeps the CSRF token in memory, sends same-origin
-credentials, adds the CSRF header to unsafe methods, and clears both authentication state and the
-query cache on `401`. The App shell exposes the current `admin` identity and logout on desktop and
-mobile. The signed cookie is browser-managed; the frontend does not store the password, returned
-session payload, or CSRF token in `localStorage` or `sessionStorage`.
+이 저장소의 Compose는 범용 one-click 설치 도구가 아니라 단일 호스트 기준 환경을 개발하고
+검증하기 위한 구성이다. Edge, Managed PostgreSQL과 Control Plane은 서로 다른 생명주기로 실행하며,
+DNS와 TLS를 포함한 외부 운영 환경은 별도로 준비해야 한다.
 
-Default and production management login is supported only at
-`https://<management-hostname>/login`. The existing operator-managed front Edge on the OCI VM must
-terminate HTTPS; certificate issuance, installation, renewal, and the operator's Edge TLS
-configuration are outside this repository. For loopback development only, explicitly setting
-`HEIMDALL_AUTH_COOKIE_SECURE=false` makes the API issue `heimdall-local-session` without `Secure` so
-HTTP login can be tested locally. The API accepts this setting only when
-`HEIMDALL_MANAGEMENT_HOSTNAME` ends in `.localhost` and signs the local cookie with a separate
-purpose-derived key, so renaming it cannot turn it into a valid production cookie. Keep every
-browser request on the same host spelling, such as `127.0.0.1` throughout or `localhost` throughout,
-because the cookie remains host-only; never expose this mode beyond loopback. Project public
-hostnames and loopback Preview URLs remain unauthenticated and do not receive the management cookie.
+- [처음 보는 운영자를 위한 사용자 가이드](doc/README.md)
+- [배포 요청 뒤의 실행 흐름](doc/02-execution-flow.md)
+- [저장소와 코드 구조](doc/03-repository-structure.md)
+- [데이터와 생명주기](doc/04-data-and-lifecycle.md)
+- [로컬 실행과 장애 대응](doc/05-operations.md)
+- [정확한 아키텍처 계약](project-docs/architecture.md)
 
-### Initialize and rotate administrator secrets
-
-Install the Backend package in the host virtual environment and initialize authentication before
-starting Compose. The command reads the password twice with `getpass`; it never accepts the password
-through an environment variable or command-line argument.
+개발 검증은 변경 영역에 따라 다음 명령을 사용한다.
 
 ```bash
-python3 -m venv backend/.venv
-backend/.venv/bin/pip install -e backend
-backend/.venv/bin/heimdall-admin-init /absolute/private/path/heimdall-auth
-```
-
-The target must be a new canonical, non-symlink absolute path outside the repository and disjoint
-from the runtime, Git workspace, and Edge config roots. Initialization atomically creates a `0700`
-directory with `0600` `admin-password.hash` and `session-signing.key` files and refuses symlink path
-components, a target inside a Git worktree, or an existing target. Set
-`HEIMDALL_AUTH_SECRET_ROOT` in `.env` to that exact unchanged host path. Control Compose mounts it
-read-only at `/run/secrets/heimdall/auth` in the API service only. Compose derives the non-secret
-API-only `HEIMDALL_AUTH_SECRET_SOURCE_ROOT` metadata from the same host setting; do not add a second
-variable to `.env`. At startup the API rejects direct lexically equal, descendant, or ancestor
-overlap with the runtime root, Git workspace root, or Edge config root. Docker resolves host
-bind-source symlinks before the container starts, so the operator must not replace the initialized
-directory with a symlink or configure an alias to it. The password, hash, and signing key are not
-placed in Compose environment values, Docker inspect environment, Control PostgreSQL, logs, Git,
-Workers, frontend, Edge, Managed DB, or application containers; rendered Compose and Docker mount
-metadata expose only paths.
-
-To rotate the administrator credential or signing key, initialize a different new directory, change
-`HEIMDALL_AUTH_SECRET_ROOT` to the new path, and recreate the API so it loads the new read-only bind:
-
-```bash
-backend/.venv/bin/heimdall-admin-init /absolute/private/path/heimdall-auth-v2
-# Update HEIMDALL_AUTH_SECRET_ROOT in .env, then recreate only the API service.
-docker compose --env-file .env -f infra/dev/compose.yaml \
-  up -d --no-deps --force-recreate api
-```
-
-Changing either credential invalidates existing sessions; the operator signs in again through the
-HTTPS management hostname, or through the same-host loopback URL only when the explicit local HTTP
-development mode is enabled.
-
-## Reference deployment와 Local Docker Compose
-
-아래 절차는 범용 프로덕션 installer가 아니라 단일 호스트 reference 환경을 개발·검증하기
-위한 실행 절차다. 외부 DNS, TLS, private tunnel과 VM 보안 정책은 이 Compose가 생성하지
-않으며 운영자가 별도로 관리한다.
-
-로컬 Control Plane은 Docker Desktop을 기본으로 실행하며, Ubuntu Docker Engine에서는 별도 override로
-두 Worker의 host-loopback probe 경로를 지원한다. Edge Gateway, Managed PostgreSQL과 Control Plane의
-Compose lifecycle은 분리한다. Control frontend가 external `heimdall-edge` network에 연결되므로 Edge를
-먼저 시작하고, Managed PostgreSQL과 Control PostgreSQL, FastAPI API, deployment Worker, Routing
-Worker와 production frontend를 이어서 시작한다.
-
-```bash
-cd ../heimdall-python
-cp .env.example .env
-# Set passwords, runtime/Git/Edge absolute paths, management/deployment hostnames, and
-# HEIMDALL_AUTH_SECRET_ROOT. Initialize that new auth directory before starting Compose.
-# Keep HEIMDALL_AUTH_COOKIE_SECURE=true except for explicit loopback-only HTTP development.
-# HEIMDALL_EDGE_CONFIG_ROOT로 지정한 owner-only host directory를 먼저 만든다.
-backend/.venv/bin/heimdall-admin-init /absolute/private/path/heimdall-auth
-docker compose --env-file .env -f infra/edge/compose.yaml up -d --wait
-
-cd ../heimdall-managed-db
-cp .env.example .env
-# .env의 admin/provisioner password를 설정한다.
-docker compose --env-file .env up -d --wait
-
-cd ../heimdall-python
-# Docker Desktop
-docker compose --env-file .env -f infra/dev/compose.yaml up -d --build --wait
-docker compose --env-file .env -f infra/dev/compose.yaml ps
-```
-
-Ubuntu Docker Engine에서는 base Compose와 Linux override를 항상 함께 사용한다. Linux의
-`host.docker.internal`은 host loopback에 bind된 candidate·Preview·Edge port로 이어지지 않으므로,
-override는 두 Worker만 host network에서 실행하고 Control DB와 probe endpoint를 `127.0.0.1`로
-맞춘다. API, frontend, Control PostgreSQL과 application container의 network는 바뀌지 않는다.
-이 override는 Worker probe 문제만 해결한다. DB 사용 application container에는 Ubuntu host 또는 별도
-Managed DB VM에서 실제로 도달 가능한 private `HEIMDALL_PROJECT_DB_RUNTIME_HOST`와 port를 설정해야
-하며, host loopback에만 bind된 Managed DB는 bridge application container에서 접근할 수 없다.
-
-```bash
-docker compose --env-file .env \
-  -f infra/dev/compose.yaml \
-  -f infra/dev/compose.linux.yaml \
-  up -d --build --wait
-docker compose --env-file .env \
-  -f infra/dev/compose.yaml \
-  -f infra/dev/compose.linux.yaml \
-  ps
-```
-
-- UI: `http://127.0.0.1:5173`
-- Management login: by default, `https://<HEIMDALL_MANAGEMENT_HOSTNAME>/login` with username
-  `admin`; for loopback HTTP development only, set `HEIMDALL_AUTH_COOKIE_SECURE=false`, rebuild and
-  recreate the API, then use `http://127.0.0.1:5173/login` or `http://localhost:5173/login` without
-  switching between those hostnames; use the logout action in the App shell to end the session
-- API health: `http://127.0.0.1:8000/api/health`
-- 기본 Edge HTTP listener: `http://127.0.0.1:8088`
-- 기본 관리 route 확인:
-  `curl --fail --header 'Host: heimdall.localhost' http://127.0.0.1:8088/`
-- API·두 Worker·frontend와 Control DB 로그는 Docker Desktop에서
-  `docker compose --env-file .env -f infra/dev/compose.yaml logs --follow`로 확인한다. Ubuntu에서는
-  `docker compose --env-file .env -f infra/dev/compose.yaml -f infra/dev/compose.linux.yaml logs --follow`로
-  같은 override를 적용한다.
-- Edge 로그: `docker compose --env-file .env -f infra/edge/compose.yaml logs --follow`
-- Managed DB 로그:
-  `docker compose --env-file ../heimdall-managed-db/.env -f ../heimdall-managed-db/compose.yaml logs --follow`
-
-Edge Compose project는 `heimdall-python-edge`이며 public request data path의 Edge container와 고정
-network를 소유한다. Control Plane Compose project는 `heimdall-python-local`이고 Edge network를
-external resource로만 사용한다. frontend는 `heimdall-control-frontend` alias로 Edge에 연결되고,
-project gateway만 project별 deterministic alias로 추가 연결된다. application container는 generation
-network에만 남는다. Routing Worker가 쓰는 `HEIMDALL_EDGE_CONFIG_ROOT`는 Edge container에 read-only로
-mount된다.
-
-Managed DB project 이름은 `heimdall-managed-db`다. Managed DB와 Control Plane은 Docker network를
-공유하지 않고 TCP endpoint로만 통신한다. `HEIMDALL_RUNTIME_ROOT`와
-`HEIMDALL_GIT_WORKSPACE_ROOT`는 host와 deployment Worker container에서 같은 절대 경로로 bind해 host
-Docker daemon에 넘기는 build·secret·NGINX mount source를 유지한다. service-log Unix socket은 별도
-`broker-sockets` volume에서 API와 deployment Worker만 공유한다.
-
-`HEIMDALL_AUTH_SECRET_ROOT` is a canonical non-symlink host directory outside the repository and not
-a child or ancestor of any Worker- or Edge-visible root. Control Compose passes only the fixed
-container path to the API and mounts the directory there read-only. The API also receives the
-derived host-source path as non-secret direct-overlap-check metadata. The deployment Worker, Routing
-Worker, frontend, Edge, Managed DB, and application containers receive neither auth key nor this
-mount.
-
-Docker socket은 deployment Worker와 Routing Worker에만 mount한다. API, frontend와 application
-container에는 전달하지 않는다. Docker Desktop에서는 두 Worker가 `host.docker.internal`로 host의
-loopback publish endpoint를 검증한다. Ubuntu Docker Engine에서는 Linux override가 두 Worker를 host
-network로 실행하고 candidate health, stable Preview와 Edge listener를 `127.0.0.1`로 검증한다. Routing
-Worker 환경은 Control DB와 Edge/routing 설정만 포함하며 사용하지 않는 Managed DB provisioner
-credential은 전달하지 않는다. API와 DB 접근 project container도 기본적으로
-`host.docker.internal:55433`의 외부 Managed DB에 연결한다. 운영에서는 Managed DB VM의 private DNS와
-`5432`로 바꾼다. 운영 Edge HTTP bind는 VM 방화벽 정책과 함께 명시적으로 설정한다.
-
-개발 데이터를 유지하려면 `docker compose down -v`를 실행하지 않는다. Compose 실행 중에는 아래
-host API·Worker·Vite 명령을 같은 포트에서 동시에 실행하지 않는다.
-
-### 운영 중지와 재시작
-
-잠시 중지할 때는 container와 network를 삭제하는 `down` 대신 `stop`을 사용한다.
-
-```bash
-# Control Plane만 중지한다. Edge, Managed DB와 배포된 project는 계속 실행된다.
-docker compose --env-file .env -f infra/dev/compose.yaml stop
-
-# Ubuntu Docker Engine
-docker compose --env-file .env \
-  -f infra/dev/compose.yaml \
-  -f infra/dev/compose.linux.yaml \
-  stop
-
-# Control Plane을 다시 시작하고 health를 기다린다.
-docker compose --env-file .env -f infra/dev/compose.yaml up -d --wait
-
-# Ubuntu Docker Engine에서는 Worker가 bridge mode로 되돌아가지 않도록 override를 함께 적용한다.
-docker compose --env-file .env \
-  -f infra/dev/compose.yaml \
-  -f infra/dev/compose.linux.yaml \
-  up -d --wait
-
-# Ubuntu Worker 설정만 명시적으로 다시 만들 때
-docker compose --env-file .env \
-  -f infra/dev/compose.yaml \
-  -f infra/dev/compose.linux.yaml \
-  up -d --no-deps --force-recreate worker routing-worker
-
-# Managed DB는 별도 lifecycle로 중지하거나 다시 시작한다.
-docker compose --env-file ../heimdall-managed-db/.env \
-  -f ../heimdall-managed-db/compose.yaml stop
-docker compose --env-file ../heimdall-managed-db/.env \
-  -f ../heimdall-managed-db/compose.yaml up -d --wait
-
-# Edge 중지는 모든 public hostname을 중단하므로 의도한 점검 때만 별도로 수행한다.
-docker compose --env-file .env -f infra/edge/compose.yaml stop
-```
-
-Control Compose의 `stop/down`은 Edge container·Edge network와 배포된 project runtime을 소유하지
-않으므로 제거하지 않는다. Edge NGINX의 마지막 적용 config와 project gateway가 살아 있으면 기존
-public URL과 loopback Preview는 Control 중단 중에도 data path를 유지한다. 각 DB Compose의 `down`은
-자기 container와 network만 삭제하며 `-v`가 없으면 자기 PostgreSQL named volume을 보존한다. Control
-Plane의 `down -v`는 Control DB만, Managed DB project의 `down -v`는 project application data만
-삭제하므로 의도적인 데이터 초기화에만 사용한다.
-
-### 장애 영향
-
-| 중단 대상          | 기존 public route와 Preview                                        | 관리·변경 기능                                               |
-| ------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------ |
-| frontend           | project public URL과 loopback Preview는 유지                       | 관리 hostname과 UI를 사용할 수 없음                          |
-| API                | 마지막 적용 Edge config로 public URL 유지                          | API와 관리 UI를 사용할 수 없음                               |
-| deployment Worker  | 실행 중 service·gateway와 public URL 유지                          | 새 배포, runtime reconciliation과 service log broker가 멈춤  |
-| Routing Worker     | 마지막 적용 Edge config로 public URL 유지                          | hostname 변경이 `PENDING/APPLYING`에서 대기                  |
-| Control PostgreSQL | Edge·project runtime·Managed DB가 살아 있으면 기존 요청 유지       | API와 두 Worker가 상태를 읽거나 갱신할 수 없음               |
-| Edge Gateway       | loopback Preview는 유지되지만 모든 public hostname 중단            | Docker restart policy 복구 전 hostname 접근 불가             |
-| Managed PostgreSQL | DB 미사용 project는 유지                                           | DB 사용 project의 application 요청이 실패                    |
-| Docker daemon      | project service, gateway와 local Compose container가 함께 영향받음 | Docker 복구 뒤 기존 container의 restart policy에 따라 재시작 |
-
-Edge Gateway, 성공한 project service와 project별 NGINX gateway는 Control Plane과 별도 container이며
-`unless-stopped` restart policy를 가진다. 이미 적용된 hostname의 request path에는 API, 두 Worker와
-Control PostgreSQL이 포함되지 않는다. Managed PostgreSQL도 별도 Compose/VM lifecycle이므로 Control
-Plane을 중지하거나 재배포해도 application data path는 유지된다.
-
-## Host Backend 개발 (선택)
-
-```bash
+# Backend
 cd backend
-set -a
-source ../.env
-set +a
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
 .venv/bin/ruff format --check .
-.venv/bin/pytest
 .venv/bin/ruff check .
-.venv/bin/uvicorn heimdall.main:create_app --factory --reload
-```
+.venv/bin/pytest
 
-For a host-run API, `source ../.env` must set `HEIMDALL_AUTH_SECRET_ROOT` to the absolute host
-directory created by `heimdall-admin-init`. The Uvicorn factory loads the configured authentication
-files and fails closed before serving if the directory or files are missing, linked, malformed, or do
-not have the exact private modes. The two Worker processes do not read this authentication root.
-
-API와 별도 terminal에서 deployment Worker와 Routing Worker를 실행한다.
-
-```bash
-cd backend
-.venv/bin/heimdall-worker
-# 또는 .venv/bin/python -m heimdall.worker
-
-.venv/bin/heimdall-routing-worker
-# 또는 .venv/bin/python -m heimdall.routing_worker
-```
-
-두 Worker만 Docker socket을 사용한다. API process와 frontend, 배포 project container에는 Docker
-socket을 전달하지 않는다. deployment Worker는 project generation과 gateway를, Routing Worker는
-exact-label Edge network·gateway와 generated route config를 관리한다.
-서비스 로그 조회도 API가 Docker를 직접 호출하지 않고 같은 `HEIMDALL_RUNTIME_ROOT`의 owner-only
-`logs.sock`과 `log-stream.sock`을 통해 deployment Worker에 요청한다. API와 deployment Worker를
-함께 실행해야 하며 deployment Worker가 없으면 로그 조회만 stable `503`으로 실패하고 배포 처리
-상태는 바뀌지 않는다. snapshot과
-live stream은 각각 최대 4개 처리 슬롯을 사용해 장시간 SSE 연결이 수동 조회를 막지 않는다.
-구조화 deployment event SSE도 최대 4개의 PostgreSQL LISTEN 연결만 사용해 API pool 8개 중 일반
-요청용 연결을 남긴다.
-
-## Host Frontend 개발 (선택)
-
-```bash
-cd frontend
-pnpm install
+# Frontend
+cd ../frontend
 pnpm verify
-pnpm exec playwright install chromium
-pnpm e2e
-pnpm dev
 ```
-
-`pnpm e2e`는 local Vite server와 mock API를 사용해 관리자 runtime 복구 화면을 실제
-Chromium에서 검증한다.
-
-## PostgreSQL data와 release smoke
-
-Control Plane과 Managed DB Compose는 각자의 PostgreSQL volume을 소유한다. 두 `.env`의 provisioner
-password와 `HEIMDALL_PROJECT_DB_ADMIN_URL` password는 같은 값이어야 한다.
-
-세 Compose의 정적 설정은 실제 `.env` 값으로 각각 확인한다.
-
-```bash
-docker compose --env-file .env -f infra/edge/compose.yaml config --quiet
-docker compose --env-file .env -f infra/dev/compose.yaml config --quiet
-docker compose --env-file ../heimdall-managed-db/.env \
-  -f ../heimdall-managed-db/compose.yaml config --quiet
-```
-
-실제 PostgreSQL·Docker·NGINX release smoke는 명시적으로 opt-in한다. public hostname smoke는
-`heimdall_routing_smoke_` 접두사의 새 전용 빈 DB만 허용하며 일반 `heimdall_control` DB를 거부한다.
-Edge container와 network도 동일한 `heimdall.test-id` label을 가진 test-owned resource여야 한다.
-아래 URL의 password는 로컬 test PostgreSQL 값과 맞춰야 한다.
-
-```bash
-cd backend
-export HEIMDALL_TEST_ID='public-hostname-routing-<run-id>'
-export HEIMDALL_TEST_CONTROL_DB_URL='postgresql://heimdall:<test-password>@127.0.0.1:<test-port>/heimdall_routing_smoke_<run_id>'
-export HEIMDALL_TEST_MANAGED_DB_ADMIN_URL='postgresql://heimdall_provisioner:<provisioner-password>@127.0.0.1:55433/postgres'
-export HEIMDALL_TEST_MANAGED_DB_RUNTIME_HOST='host.docker.internal'
-export HEIMDALL_TEST_MANAGED_DB_RUNTIME_PORT='55433'
-export HEIMDALL_TEST_PUBLIC_REPOSITORY_URL='https://github.com/CodingPenguin-yoon/heimdall-test'
-export HEIMDALL_TEST_EDGE_NETWORK='heimdall-edge-smoke'
-export HEIMDALL_TEST_EDGE_CONTAINER='heimdall-edge-gateway-smoke'
-export HEIMDALL_TEST_EDGE_CONFIG_ROOT="/absolute/test-owned/path/$HEIMDALL_TEST_ID"
-export HEIMDALL_TEST_EDGE_HOST='127.0.0.1'
-export HEIMDALL_TEST_EDGE_PORT='18088'
-export HEIMDALL_TEST_MANAGEMENT_HOSTNAME='control.routing-smoke.test'
-export HEIMDALL_RUN_DOCKER_SMOKE='true'
-install -d -m 700 "$HEIMDALL_TEST_EDGE_CONFIG_ROOT"
-printf '%s\n' "$HEIMDALL_TEST_ID" \
-  > "$HEIMDALL_TEST_EDGE_CONFIG_ROOT/.heimdall-routing-smoke-owner"
-chmod 600 "$HEIMDALL_TEST_EDGE_CONFIG_ROOT/.heimdall-routing-smoke-owner"
-export HEIMDALL_EDGE_TEST_ID="$HEIMDALL_TEST_ID"
-export HEIMDALL_EDGE_CONFIG_ROOT="$HEIMDALL_TEST_EDGE_CONFIG_ROOT"
-export HEIMDALL_EDGE_NETWORK_NAME="$HEIMDALL_TEST_EDGE_NETWORK"
-export HEIMDALL_EDGE_CONTAINER_NAME="$HEIMDALL_TEST_EDGE_CONTAINER"
-export HEIMDALL_EDGE_HTTP_PORT="$HEIMDALL_TEST_EDGE_PORT"
-export HEIMDALL_MANAGEMENT_HOSTNAME="$HEIMDALL_TEST_MANAGEMENT_HOSTNAME"
-docker compose --project-name "heimdall-routing-smoke-$HEIMDALL_TEST_ID" \
-  -f ../infra/edge/compose.yaml up -d --wait
-.venv/bin/pytest tests/integration
-docker compose --project-name "heimdall-routing-smoke-$HEIMDALL_TEST_ID" \
-  -f ../infra/edge/compose.yaml down
-```
-
-config root는 test id와 이름이 같은 새 전용 경로여야 하며 현재 사용자 소유 `0700` directory와 위의
-exact owner marker만 있는 무라우트 상태로 시작한다. smoke는 실행 중 test Edge의
-`/etc/nginx/routes`가 이 resolved 경로를 가리키는 read-only bind인지도 확인한다. 시작 전에 전용 DB가
-비어 있는지 확인하고, 종료 시 생성한 project row와 exact-label gateway/generation network를 삭제한 뒤
-Edge public route snapshot을 빈 상태로 되돌린다. 실패한 pytest 뒤에도 마지막 `docker compose down`을
-실행해 test Edge lifecycle을 정리한다.
-
-Mac 로컬 테스트의 checkout, project/Edge generated NGINX config와 runtime secret file은 저장소의
-`.heimdall-local/git`, `.heimdall-local/runtime`, `.heimdall-local/edge` 아래에 모은다. 이
-디렉터리는 전체가 Git에서 제외되며 PostgreSQL data는 각 Compose의 named volume이
-소유한다. Administrator authentication files use the separate outside-repository path
-described above.
-
-## Application database contract
-
-프로젝트 코드는 DB 접근 service에서 다음 값을 읽어야 한다.
-
-```text
-DATABASE_HOST
-DATABASE_PORT
-DATABASE_NAME
-DATABASE_USER
-DATABASE_SCHEMA
-DATABASE_PASSWORD_FILE
-```
-
-비밀번호는 `DATABASE_PASSWORD_FILE`이 가리키는 read-only file에서 읽는다. application schema와 table migration은 Alembic, Django migration 등 프로젝트 코드가 소유한다.
-
-사용자가 `SECRET` kind로 `JWT_SECRET`을 설정하면 raw 값 대신 다음 file path가 환경변수에 전달된다.
-
-```text
-JWT_SECRET=/run/secrets/heimdall/environment/jwt_secret
-```
-
-프로젝트 코드는 해당 path의 read-only file을 읽는다. raw secret은 Control DB, deployment snapshot, API, event와 Docker environment에 저장하지 않는다.
-
-## Runtime flow
-
-```text
-QUEUED
--> PREPARING: PostgreSQL job claim과 exact SHA checkout
--> BUILDING: service image build
--> STARTING: generation network와 candidate container
--> HEALTH_CHECKING: loopback service probe
--> ACTIVATING: nginx -t, atomic config replace, reload, route probe
--> SUCCEEDED
-```
-
-build, start, health 또는 activation이 실패하면 기존 Preview 연결을 먼저 복구하고, 실패 command 출력과
-존재하는 service의 최근 로그를 저장한 뒤 실패한 새 resource만 정리한다. 진단 저장 자체가 실패해도
-cleanup과 `FAILED` 수렴은 계속한다. cleanup은 Heimdall label과 deployment ID가 모두 일치하는 정확한
-resource만 대상으로 한다.
-
-## Public hostname routing flow
-
-프로젝트 상세 화면은 다음 단일 route API를 사용한다.
-
-```text
-GET    /api/projects/{projectId}/public-route
-PUT    /api/projects/{projectId}/public-route   { "subdomain": "student-a" }
-DELETE /api/projects/{projectId}/public-route
-```
-
-Backend는 lowercase subdomain label을 검증하고 `HEIMDALL_DEPLOYMENT_BASE_DOMAIN`과 결합해 hostname을
-만든다. `admin`, `api`, `www`, 관리 hostname label과 운영자가 추가한 label은 예약되며 project당 한
-route와 전체 hostname uniqueness를 DB constraint와 transaction guard로 함께 보장한다. public URL은
-현재 `http://<server-derived-hostname>`이며 route가 `PENDING` 또는 `APPLYING`일 때 UI가 상태를
-갱신한다.
-
-같은 hostname PUT은 `PENDING/APPLYING/ACTIVE`에서 revision을 바꾸지 않는다.
-`FAILED/UNCERTAIN`에서 같은 PUT으로 retry하면 새 revision 없이 현재 desired revision job만
-다시 queue한다. gateway가 아직 없어서 대기한 job은 첫 성공 배포 또는 active runtime
-reconciliation이 해당 project의 현재 `GATEWAY_START_FAILED` job만 즉시 깨운다.
-
-```text
-desired route와 revision 저장
--> Routing Worker claim token·lease
--> exact-label project gateway를 heimdall-edge network/alias에 연결
--> applied_hostname 기반 전체 route snapshot render
--> live Edge main·management config와 candidate route 전체 nginx -t
--> atomic config replace와 exact-label Edge reload
--> 관리 hostname과 변경 hostname probe
--> 최신 claim·revision일 때 ACTIVE/INACTIVE와 applied snapshot 확정
-```
-
-`applied_hostname`은 desired hostname 변경이나 disable 요청 중에도 Edge가 실제로 사용 중인 마지막
-snapshot을 별도로 보존한다. 새 config test·reload·probe 또는 확실한 stale claim 거절은 이전 config를
-복원하고 이전 applied hostname을 다시 확인한다. DB finalize 결과가 모호하면 candidate와 journal을
-유지한 채 새 claim을 막고 canonical DB snapshot reconciliation을 먼저 수행한다. UI도 desired hostname과 실제
-`applied_hostname`이 다르면 기존 적용 URL과 실패한 요청 URL을 구분해 표시한다. 오래된 claim은 lease
-token과 desired revision fencing을 통과할 수 없으며, 실패한 desired 변경이 기존 valid hostname을
-다른 project에 넘기지 못하도록 desired·applied hostname을 모두 충돌 검사한다. Routing Worker는 config
-생성 전, 교체 전, probe 후 finalize 전에 최초 full applied snapshot을 다시 비교하며, 다른
-claim이 바꾼 stale snapshot을 적용하지 않고 재시도한다.
-
-candidate 교체 전에는 owner-only transaction journal을 file과 directory에 fsync하고 DB finalize 뒤에는
-commit phase를 기록한다. reload 뒤 process가 강제 종료되면 다음 Routing Worker는 Control DB를 열기 전에
-journal과 current config가 previous/candidate 중 하나인지 검증만 하며, DB가 unavailable인 동안에는 현재
-valid config를 바꾸지 않는다. DB가 열리면 canonical applied snapshot을 적용하는 startup reconciliation이
-finalize 전 crash는 previous로, finalize 뒤 crash는 candidate로 수렴시키고 journal을 정리한다. current가
-journal의 previous/candidate 어느 쪽도 아니면 자동 덮어쓰지 않으며 reconciliation 성공 전 새 job도
-처리하지 않는다.
-
-Edge config는 hostname 순으로 결정적으로 생성되며 application generation을 직접 참조하지 않고
-deterministic project gateway alias의 `8080`만 upstream으로 사용한다. unknown hostname과 deployment
-base domain 밖 hostname은 default server의 `404`로 끝난다. project gateway가 새 generation으로
-재생성되어도 Edge alias와 기존 loopback stable Preview port가 함께 유지된다.
-
-현재 public hostname은 인증 없는 HTTP route다. Edge NGINX가 향후 TLS 종료 지점이지만 certificate
-배치, wildcard certificate 발급·자동 갱신과 HTTPS listener는 구현하지 않았다.
-
-`GET /api/deployments/{deploymentId}/events`는 저장된 구조화 event snapshot을 반환한다.
-active deployment의 UI는 마지막 event ID를
-`GET /api/deployments/{deploymentId}/events/stream?after={eventId}`에 넘겨 이후 event를 SSE로
-이어 받는다. insert transaction은 deployment UUID와 event ID만 PostgreSQL `NOTIFY`로 보내며 실제
-event는 항상 Control DB에서 cursor 조회한다. 브라우저 재연결의 `Last-Event-ID`도 함께 반영하므로
-notification이 유실되거나 연결이 잠시 끊겨도 저장된 event부터 복구한다. 배포가 terminal이면 남은
-event를 보낸 뒤 stream을 닫는다.
-
-`GET /api/deployments/{deploymentId}/service-logs?service={serviceName}`은 immutable snapshot의
-service만 선택하고 deterministic container 이름과 managed·project·deployment label을 모두 확인한
-뒤 최근 200줄을 조회한다. stdout과 stderr는 Docker timestamp 순으로 반환하고, Heimdall이 관리하는
-project secret과 database password는 Worker에서 `[REDACTED]`로 바뀐 뒤에만 socket을 통과한다.
-redaction 값을 준비하지 못하면 원문을 반환하지 않으며, 응답은 메모리에서만 처리하고 저장하지 않는다.
-line 단위로 안전하게 치환할 수 없는 multiline·oversized secret도
-`503 SERVICE_LOG_REDACTION_UNAVAILABLE`로 fail closed 한다.
-
-`GET /api/deployments/{deploymentId}/diagnostics`는 실패 event와 연결된 command/service artifact
-metadata를 반환하고, `GET /api/deployments/{deploymentId}/diagnostics/{artifactId}`는 선택한 bounded
-line payload만 반환한다. artifact당 최대 256KiB, service당 최근 200줄이며 기본 30일
-(`HEIMDALL_DIAGNOSTIC_RETENTION_DAYS`) 보존한다. 알려진 secret을 안전하게 가릴 수 없거나 container
-로그를 읽지 못하면 원문 대신 수집 실패 이유만 저장한다. 배포 상세 화면은 실패한 배포의 `서비스
-로그` 영역을 보존 모드로 전환하며, 이곳에서 event별 command/service artifact를 선택할 수 있다.
-
-`GET /api/deployments/{deploymentId}/service-logs/stream?service={serviceName}`은 같은 검증·redaction
-경계를 사용해 최근 200줄부터 `docker logs --follow`의 새 출력을 SSE로 전달한다. 브라우저가
-끊어지면 자동 재연결하며 새 session의 tail 200으로 화면 buffer를 교체한다. service 전환, HTTP
-disconnect, Worker 종료와 container log 종료 시 해당 Docker follow process를 정리한다. line은
-16KiB, 화면 buffer는 200줄로 제한하고 raw·redacted log 모두 저장하지 않는다. 기존 `새로고침`은
-snapshot fallback으로 유지한다. 자동 스크롤 일시정지는 SSE 수집을 끊지 않으며 새 line 수를
-표시하고, `최신 로그` 버튼으로 마지막 line 이동과 자동 추적을 함께 재개한다.
-
-다음 배포에서 Worker는 managed·project·gateway label과 실제 running 상태를 함께 확인한다. 실행
-중 gateway는 candidate route를 먼저 검증하고 candidate network를 주 네트워크로 동일 Preview
-포트에 다시 생성해 host route를 재검증한다. exact managed gateway가 정지 상태면 그 전에 기존
-active network의 last-known-good 상태로 먼저 복원한다. 이 확인이 끝난 뒤에만 DB active 전환과
-이전 generation 회수를 수행하며, 실행 중 gateway와 label이 다른 동명 container는 자동 교체하지
-않는다.
-
-Worker가 activation 도중 종료돼 lease가 만료되면 새 Worker는 DB 기록만 믿고 candidate를
-삭제하지 않는다. Control DB의 active deployment, NGINX가 응답하는 deployment ID와 Docker
-label을 비교한다. 실제 target이 정상 서비스 중이면 남은 성공 기록만 완료하고, 이전
-generation이 서비스 중임을 확인한 뒤에만 candidate를 다시 만든다. 상태를 확정할 수 없으면
-candidate를 보존하며, 반복 crash는 `HEIMDALL_WORKER_MAX_ATTEMPTS` 상한 뒤 안정적인 recovery
-failure로 종료한다.
-
-## Preserved runtime reconciliation
-
-`RECOVERY_STATE_UNCERTAIN`으로 끝난 deployment의 Docker resource는 즉시 삭제하지 않는다.
-기본 72시간(`HEIMDALL_RUNTIME_RETENTION_HOURS`) 동안 보존한 뒤 Worker가 DB, NGINX marker와
-exact Docker label을 다시 확인한다. target이 실제 active면 deployment를 성공으로 수렴시키고,
-이전 generation이 안전하게 응답하면 target candidate만 정리한다. 여전히 불확실하면
-`BLOCKED`로 남기며 자동 삭제하지 않는다.
-
-관리 UI에서 보존 기간 전에도 안전 재확인을 요청할 수 있다. 강제 정리는 전체 Deployment ID를
-확인값으로 입력해야 하며, Control DB가 active로 기록한 generation과 label이 일치하지 않는
-resource는 삭제하지 않는다. API는 요청을 DB에만 기록하고 실제 Docker 작업은 lease를 획득한
-Worker가 수행한다.
