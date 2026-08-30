@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import socket
+import stat
 from datetime import timedelta
 from threading import Event
 from typing import Protocol
@@ -68,6 +69,10 @@ def _run_workers_once(
 def run(settings: Settings | None = None, stop: Event | None = None) -> None:
     app_settings = settings or Settings.from_environment()
     stop_event = stop or Event()
+    _prepare_worker_directories(
+        app_settings.runtime_root,
+        app_settings.git_workspace_root,
+    )
     database = Database(app_settings.database_url)
     database.open()
     log_broker: UnixServiceLogBrokerServer | None = None
@@ -241,6 +246,51 @@ def run(settings: Settings | None = None, stop: Event | None = None) -> None:
         if log_broker is not None:
             log_broker.stop()
         database.close()
+
+
+def _prepare_worker_directories(runtime_root, git_workspace_root) -> None:
+    for path in (
+        runtime_root,
+        git_workspace_root,
+        runtime_root / ".locks",
+        runtime_root / ".locks" / "projects",
+        runtime_root / "gateways",
+    ):
+        _prepare_exact_private_directory(path)
+
+
+def _prepare_exact_private_directory(path) -> None:
+    if not path.is_absolute():
+        raise RuntimeError(f"worker directory must be absolute: {path}")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f"worker directory could not be prepared: {path}") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError(f"worker directory is unsafe: {path}")
+        try:
+            os.fchown(descriptor, os.geteuid(), os.getegid())
+            os.fchmod(descriptor, 0o700)
+        except OSError as error:
+            raise RuntimeError(f"worker directory could not be prepared: {path}") from error
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_gid != os.getegid()
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        ):
+            raise RuntimeError(f"worker directory is unsafe: {path}")
+    finally:
+        os.close(descriptor)
 
 
 def main() -> None:

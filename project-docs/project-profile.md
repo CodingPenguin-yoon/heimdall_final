@@ -86,6 +86,10 @@
   `pg_signal_backend`의 `SET` privilege를 확인한다. session 종료 구간에서만 predefined role을
   활성화하고 반드시 reset한다. 권한이 부족하면 삭제 Worker를 포함한 process가 fail-fast하며 database
   session 종료나 drop을 시도하지 않는다.
+- 별도 Managed DB Compose의 one-shot bootstrap은 신규·기존 volume 모두에서 provisioner role과 위
+  privilege를 idempotent하게 reconcile한다. Main Worker는 Control DB 연결 전에 설정된 runtime/Git
+  root와 고정 lock/gateway root만 비재귀적으로 현재 UID/GID의 `0700` directory로 준비한다. 실제 lock
+  contention만 삭제 대기로 취급하고 unsafe filesystem 상태는 failed deletion으로 보존한다.
 - 불확실한 failed candidate는 설정된 기간 동안 보존하고 durable reconciliation Worker가
   재확인한다. 자동 경로는 안전 판정이 없으면 삭제하지 않으며 관리자 force cleanup은 전체
   deployment ID 확인과 DB active guard를 요구한다.

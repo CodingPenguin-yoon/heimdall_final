@@ -331,7 +331,7 @@ class ProjectDeletionWorker:
         try:
             with self._secrets.project_operation_lock(claim.job.project_id, blocking=False):
                 pass
-        except SecretStoreError:
+        except SecretStoreBusyError:
             return False
         resource = self._databases.get_resource(claim.job.project_id)
         if resource is None:

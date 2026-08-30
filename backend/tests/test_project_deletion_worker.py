@@ -19,7 +19,7 @@ from heimdall.projects.models import (
     ProjectDeletionPhase,
     ProjectDeletionState,
 )
-from heimdall.secrets.store import SecretStoreBusyError
+from heimdall.secrets.store import SecretStoreBusyError, SecretStoreError
 from heimdall.worker import _run_workers_once
 
 
@@ -255,6 +255,44 @@ def test_worker_retries_when_secret_lock_becomes_busy_before_cleanup() -> None:
     assert operations == []
     assert projects.reschedules == ["PROJECT_SECRET_OPERATION_ACTIVE"]
     assert projects.failures == []
+
+
+def test_worker_defers_only_active_secret_lock_while_waiting_for_operations() -> None:
+    operations: list[str] = []
+    projects = MemoryProjects(deletion_job())
+    routes = MemoryRoutes(operations)
+
+    class BusySecrets(MemorySecrets):
+        @contextmanager
+        def project_operation_lock(self, project_id: UUID, *, blocking: bool = True):
+            assert blocking is False
+            raise SecretStoreBusyError("project secret operation is active")
+            yield
+
+    worker = make_worker(projects, operations, routes, secrets=BusySecrets(operations))
+
+    assert worker.run_once() is True
+    assert projects.deferrals == 1
+    assert projects.failures == []
+
+
+def test_worker_fails_unsafe_secret_lock_instead_of_deferring_forever() -> None:
+    operations: list[str] = []
+    projects = MemoryProjects(deletion_job())
+    routes = MemoryRoutes(operations)
+
+    class UnsafeSecrets(MemorySecrets):
+        @contextmanager
+        def project_operation_lock(self, project_id: UUID, *, blocking: bool = True):
+            assert blocking is False
+            raise SecretStoreError("project operation lock is unsafe")
+            yield
+
+    worker = make_worker(projects, operations, routes, secrets=UnsafeSecrets(operations))
+
+    assert worker.run_once() is True
+    assert projects.deferrals == 0
+    assert projects.failures == [("PROJECT_SECRET_CLEANUP_FAILED", False)]
 
 
 def test_worker_fails_closed_when_database_authorization_and_resource_disagree() -> None:
